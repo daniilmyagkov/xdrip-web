@@ -13,8 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "preact": "^11.0.0",
-    "uplot": "^1.6.32"
+    "preact": "^11.0.0"
   },
   "devDependencies": {
     "@preact/preset-vite": "^2.10.6",
