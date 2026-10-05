@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "xDrip Redesign for the web: follower view, food/insulin entry and carb ratio on top of Nightscout",
+  "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "vite",
