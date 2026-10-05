@@ -1,0 +1,25 @@
+{
+  "name": "xdrip-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "xDrip Redesign for the web: follower view, food/insulin entry and carb ratio on top of Nightscout",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "TZ=Europe/Moscow vitest run",
+    "test:watch": "TZ=Europe/Moscow vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "preact": "^11.0.0",
+    "uplot": "^1.6.32"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
+  }
+}
