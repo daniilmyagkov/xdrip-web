@@ -71,7 +71,20 @@ export function App() {
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(id);
+    // a link from the master opened in a tab where the site is already running
+    const onHash = () => {
+      const c = connectionFromLocation();
+      if (c) {
+        saveConnection(c);
+        setConn(c);
+        setTab('home');
+      }
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener('hashchange', onHash);
+    };
   }, []);
   useEffect(() => setNow(Date.now()), [store.data]);
   useEffect(() => {

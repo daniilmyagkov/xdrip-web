@@ -48,16 +48,27 @@ export function toBase64Url(s: string): string {
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-/** Reads a connection from the page's #connect=… fragment (and removes it from the address bar). */
-export function connectionFromLocation(loc: Location = window.location): Connection | null {
-  const m = /(?:^#|&)connect=([A-Za-z0-9_-]+)/.exec(loc.hash);
+/**
+ * Decodes an onboarding link (or just its code) into a connection: accepts the full
+ * "https://…#connect=CODE" address from the master's QR / share, "connect=CODE", or the bare CODE.
+ */
+export function parseConnectLink(text: string): Connection | null {
+  const s = text.trim();
+  const m = /connect=([A-Za-z0-9_-]+)/.exec(s) ?? /^([A-Za-z0-9_-]{16,})$/.exec(s);
   if (!m?.[1]) return null;
   try {
-    const parsed = JSON.parse(fromBase64Url(m[1])) as { u?: string; t?: string };
-    if (!parsed.u) return null;
-    history.replaceState(null, '', loc.pathname + loc.search);
-    return { baseUrl: normaliseBaseUrl(parsed.u), token: (parsed.t ?? '').trim() };
+    const parsed = JSON.parse(fromBase64Url(m[1])) as { u?: unknown; t?: unknown };
+    if (typeof parsed.u !== 'string' || !parsed.u) return null;
+    return { baseUrl: normaliseBaseUrl(parsed.u), token: typeof parsed.t === 'string' ? parsed.t.trim() : '' };
   } catch {
     return null;
   }
+}
+
+/** Reads a connection from the page's #connect=… fragment (and removes it from the address bar). */
+export function connectionFromLocation(loc: Location = window.location): Connection | null {
+  if (!/(?:^#|&)connect=/.test(loc.hash)) return null;
+  const c = parseConnectLink(loc.hash);
+  if (c) history.replaceState(null, '', loc.pathname + loc.search);
+  return c;
 }

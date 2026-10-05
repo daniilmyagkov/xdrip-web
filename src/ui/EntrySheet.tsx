@@ -69,7 +69,11 @@ export function EntrySheet({ conn, entries, settings, onClose, onSaved }: Props)
       onSaved('Сохранено. На телефоны придёт в течение 1–2 минут');
       onClose();
     } catch (e) {
-      setError(e instanceof NsError ? e.message : 'Не удалось сохранить');
+      if (e instanceof NsError && (e.status === 401 || e.status === 403)) {
+        setError('Нет права вносить записи. Отсканируйте свежий QR-код с мастера: «Ещё» → «Выйти» → «Сканировать QR-код».');
+      } else {
+        setError(e instanceof NsError ? e.message : 'Не удалось сохранить');
+      }
       setSaving(false);
     }
   }
