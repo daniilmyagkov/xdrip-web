@@ -26,6 +26,8 @@ interface Props {
   view: View;
   onView: (v: View, byUser: boolean) => void;
   onPickEntry: (t: Treatment) => void;
+  /** A finger-stick tapped (without it the value shows in a tip). */
+  onPickMeter?: (m: MeterReading) => void;
   children?: ComponentChildren;
 }
 
@@ -56,7 +58,7 @@ function dotsPath(points: Array<[number, number]>): string {
   return d;
 }
 
-export function GlucoseChart({ readings, entries, meter, low, high, target, now, oldest, view, onView, onPickEntry, children }: Props) {
+export function GlucoseChart({ readings, entries, meter, low, high, target, now, oldest, view, onView, onPickEntry, onPickMeter, children }: Props) {
   const [box, size] = useSize<HTMLDivElement>();
   const svg = useRef<SVGSVGElement>(null);
   const [tip, setTip] = useState<{ x: number; y: number; text: string } | null>(null);
@@ -220,7 +222,12 @@ export function GlucoseChart({ readings, entries, meter, low, high, target, now,
     for (const m of meter) {
       const d = Math.hypot(x(m.timestamp) - px, y(m.mmol) - py);
       if (d < 22) {
-        setTip({ x: x(m.timestamp), y: y(m.mmol), text: `${mmol(m.mmol)} · из пальца · ${hhmm(m.timestamp)}` });
+        if (onPickMeter) {
+          setTip(null);
+          onPickMeter(m);
+        } else {
+          setTip({ x: x(m.timestamp), y: y(m.mmol), text: `${mmol(m.mmol)} · из пальца · ${hhmm(m.timestamp)}` });
+        }
         return;
       }
     }

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import type { Treatment } from '../core/treatment';
 import { DAY_MS } from '../core/units';
 import { mergeMeter, ns, NsError, type Connection, type MeterReading, type Reading } from '../ns/client';
+import { applyRequests } from '../ns/requests';
 
 export const READINGS_DAYS = 4;
 export const ENTRIES_DAYS = 40;
@@ -47,8 +48,8 @@ export function useStore(c: Connection | null): StoreState {
         ns.meterEntries(c, now - READINGS_DAYS * DAY_MS).catch(() => []),
         ns.status(c).catch(() => null),
       ]);
-      const entries = treatments.entries;
-      const meter = mergeMeter(treatments.checks, mbg);
+      // changes asked for on the site show at once, while the master is still carrying them out
+      const { entries, meter } = applyRequests(treatments.entries, mergeMeter(treatments.checks, mbg), treatments.requests);
       const th = (status as { settings?: { thresholds?: { bgTargetBottom?: number; bgTargetTop?: number } } } | null)?.settings?.thresholds;
       setData({
         readings,

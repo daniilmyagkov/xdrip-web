@@ -1,5 +1,6 @@
-/** Приёмы: meals with their carb ratio, filter by meal type, tap for the full calculation. */
-import { useMemo, useState } from 'preact/hooks';
+/** Приёмы: meals with their carb ratio, filter by meal type, tap for the card, swipe left to change or delete. */
+import type { ComponentChildren } from 'preact';
+import { useMemo, useRef, useState } from 'preact/hooks';
 import { classify, type MealType } from '../core/classifier';
 import { humanPart, isAutoUk, parseUk } from '../core/notes';
 import { estimateMeal, type MealEstimate } from '../core/pull';
@@ -7,7 +8,9 @@ import { recentMeals, type Meal } from '../core/roles';
 import type { Effective } from '../core/settings';
 import { bolusUnitsOf, type Treatment } from '../core/treatment';
 import { DAY_MS } from '../core/units';
+import type { Connection } from '../ns/client';
 import { READINGS_DAYS, type Snapshot } from '../state/store';
+import { EntryDetails, type Picked } from './EntryDetails';
 import { dayLabel, hhmm, MEAL_LABEL, mmol, num, trim } from './format';
 
 type Filter = 'ALL' | MealType;
@@ -50,9 +53,11 @@ export function lastMealRow(data: Snapshot, settings: Effective, now: number): R
   return newest ? rowFor(data, newest, settings, now) : null;
 }
 
-export function Meals({ data, settings, now }: { data: Snapshot; settings: Effective; now: number }) {
+export function Meals({ data, settings, now, conn, onChanged }: { data: Snapshot; settings: Effective; now: number; conn: Connection; onChanged: (message: string) => void }) {
   const [filter, setFilter] = useState<Filter>('ALL');
-  const [open, setOpen] = useState<Row | null>(null);
+  const [picked, setPicked] = useState<Picked | null>(null);
+  // the row whose «Изменить» / «Удалить» are slid out (one at a time, as in the app)
+  const [revealed, setRevealed] = useState<string | null>(null);
 
   const rows = useMemo<Row[]>(
     () => recentMeals(data.entries, now, 30 * DAY_MS, settings.workoutMs).map((meal) => rowFor(data, meal, settings, now)),
@@ -75,12 +80,43 @@ export function Meals({ data, settings, now }: { data: Snapshot; settings: Effec
         <div class="empty">Приёмов пищи за последние 30 дней нет</div>
       ) : (
         <div class="stack">
-          {shown.map((r) => (
-            <MealRow key={r.meal.treatment.id} row={r} settings={settings} onOpen={() => setOpen(r)} />
-          ))}
+          {shown.map((r) => {
+            const entry = r.meal.treatment;
+            return (
+              <MealRow
+                key={entry.id}
+                row={r}
+                settings={settings}
+                revealed={revealed === entry.id}
+                onReveal={(on) => setRevealed(on ? entry.id : null)}
+                onOpen={() => setPicked({ kind: 'entry', entry })}
+                onEdit={() => {
+                  setRevealed(null);
+                  setPicked({ kind: 'entry', entry, mode: 'edit' });
+                }}
+                onDelete={() => {
+                  setRevealed(null);
+                  setPicked({ kind: 'entry', entry, mode: 'delete' });
+                }}
+              />
+            );
+          })}
         </div>
       )}
-      {open && <MealCard row={open} settings={settings} now={now} onClose={() => setOpen(null)} />}
+      {picked && (
+        <EntryDetails
+          picked={picked}
+          conn={conn}
+          data={data}
+          settings={settings}
+          now={now}
+          onClose={() => setPicked(null)}
+          onDone={(message) => {
+            setPicked(null);
+            onChanged(message);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -94,22 +130,88 @@ export function ukLine(r: Row): { text: string; estimate: boolean } | null {
   return null;
 }
 
-function MealRow({ row, settings, onOpen }: { row: Row; settings: Effective; onOpen: () => void }) {
+/** Width of the slid-out «Изменить» / «Удалить». */
+const ACTIONS_W = 176;
+
+interface RowProps {
+  row: Row;
+  settings: Effective;
+  revealed: boolean;
+  onReveal: (on: boolean) => void;
+  onOpen: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}
+
+/** A meal in the list: tap opens its card, a swipe to the left slides out «Изменить» and «Удалить» (as in the app). */
+function MealRow({ row, settings, revealed, onReveal, onOpen, onEdit, onDelete }: RowProps) {
   const t = row.meal.treatment;
   const uk = ukLine(row);
   const human = humanPart(t.notes);
+  const [drag, setDrag] = useState<number | null>(null);
+  const swipe = useRef<{ x: number; y: number; base: number; sideways: boolean; moved: boolean } | null>(null);
+
+  const offset = drag ?? (revealed ? -ACTIONS_W : 0);
   return (
-    <div class="card tap" onClick={onOpen}>
-      <div class="card-label">
-        {MEAL_LABEL[row.type]} · {dayLabel(t.timestamp)} {hhmm(t.timestamp)}
+    <div class="swipe-row">
+      <div class="swipe-actions" aria-hidden={!revealed}>
+        <button class="swipe-edit" onClick={onEdit}>
+          Изменить
+        </button>
+        <button class="swipe-delete" onClick={onDelete}>
+          Удалить
+        </button>
       </div>
-      <div class="meal-line" style={{ marginTop: '4px', fontSize: '20px' }}>
-        <span>{trim(bolusUnitsOf(t), 2)} ед</span>
-        <span class="muted">·</span>
-        <span>{trim(t.carbs / settings.gramsPerBreadUnit, 1)} ХЕ</span>
-        {human && <span class="small muted">{human}</span>}
+      <div
+        class={`card tap swipe-front ${drag !== null ? 'dragging' : ''}`}
+        style={{ transform: `translateX(${offset}px)` }}
+        onPointerDown={(e) => {
+          swipe.current = { x: e.clientX, y: e.clientY, base: revealed ? -ACTIONS_W : 0, sideways: false, moved: false };
+        }}
+        onPointerMove={(e) => {
+          const s = swipe.current;
+          if (!s) return;
+          const dx = e.clientX - s.x;
+          const dy = e.clientY - s.y;
+          if (!s.sideways && Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
+            s.sideways = true;
+            try {
+              (e.currentTarget as Element).setPointerCapture(e.pointerId);
+            } catch {
+              /* not a live pointer */
+            }
+          }
+          if (Math.hypot(dx, dy) > 8) s.moved = true;
+          if (s.sideways) setDrag(Math.max(-ACTIONS_W, Math.min(0, s.base + dx)));
+        }}
+        onPointerUp={() => {
+          const s = swipe.current;
+          if (s?.sideways && drag !== null) onReveal(drag < -ACTIONS_W / 2);
+          setDrag(null);
+        }}
+        onPointerCancel={() => {
+          swipe.current = null;
+          setDrag(null);
+        }}
+        onClick={() => {
+          const s = swipe.current;
+          swipe.current = null;
+          if (s?.moved) return; // the end of a swipe, not a tap
+          if (revealed) onReveal(false);
+          else onOpen();
+        }}
+      >
+        <div class="card-label">
+          {MEAL_LABEL[row.type]} · {dayLabel(t.timestamp)} {hhmm(t.timestamp)}
+        </div>
+        <div class="meal-line" style={{ marginTop: '4px', fontSize: '20px' }}>
+          <span>{trim(bolusUnitsOf(t), 2)} ед</span>
+          <span class="muted">·</span>
+          <span>{trim(t.carbs / settings.gramsPerBreadUnit, 1)} ХЕ</span>
+          {human && <span class="small muted">{human}</span>}
+        </div>
+        {uk && <div class={`meal-uk ${uk.estimate ? 'estimate' : ''}`}>{uk.text}</div>}
       </div>
-      {uk && <div class={`meal-uk ${uk.estimate ? 'estimate' : ''}`}>{uk.text}</div>}
     </div>
   );
 }
@@ -122,7 +224,7 @@ const ISF_ORIGIN: Record<string, string> = {
   NONE: 'нет данных',
 };
 
-export function MealCard({ row, settings, now, onClose }: { row: Row; settings: Effective; now: number; onClose: () => void }) {
+export function MealCard({ row, settings, now, onClose, children }: { row: Row; settings: Effective; now: number; onClose: () => void; children?: ComponentChildren }) {
   const t = row.meal.treatment;
   const est = row.estimate;
   const p = est?.pulled;
@@ -232,6 +334,7 @@ export function MealCard({ row, settings, now, onClose }: { row: Row; settings: 
           </div>
         )}
         {now < t.timestamp + settings.workoutMs && <div class="caption" style={{ marginTop: '10px' }}>УК сохранится автоматически, когда пройдёт время отработки.</div>}
+        {children}
       </div>
     </div>
   );

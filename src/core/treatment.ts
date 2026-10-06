@@ -13,6 +13,10 @@ export interface Treatment {
   notes: string | null;
   eventType?: string | null;
   enteredBy?: string | null;
+  /** Nightscout _id of its document (to change or delete it). */
+  nsId?: string | null;
+  /** The document's uuid field, when it has one. */
+  uuid?: string | null;
 }
 
 /**

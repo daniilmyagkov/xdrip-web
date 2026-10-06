@@ -2,15 +2,15 @@
  * Главная — the phone's home screen: the newest meal with its УК on the left and the glucose on the
  * right, then the graph (scroll / zoom / tap a meal) with the green «+» on it, and the 24 h strip.
  */
-import { useEffect, useMemo, useState } from 'preact/hooks';
-import { humanPart, isNotMeal } from '../core/notes';
+import { useMemo, useState } from 'preact/hooks';
 import type { Effective } from '../core/settings';
-import { bolusUnitsOf, type Treatment } from '../core/treatment';
+import type { Connection } from '../ns/client';
 import type { Snapshot } from '../state/store';
 import { DEFAULT_SPAN, futureMargin, liveView, type View } from './chartModel';
+import { EntryDetails, type Picked } from './EntryDetails';
 import { arrow, dayLabel, hhmm, MEAL_LABEL, minutesAgo, mmol, num, trim } from './format';
 import { GlucoseChart } from './GlucoseChart';
-import { lastMealRow, MealCard, mealRowFor, type Row } from './Meals';
+import { lastMealRow, type Row } from './Meals';
 import { Overview } from './Overview';
 
 const STALE_MS = 11 * 60_000;
@@ -27,17 +27,6 @@ function delta(readings: Snapshot['readings']): number {
     }
   }
   return NaN;
-}
-
-export function entryText(t: Treatment): string {
-  const parts: string[] = [];
-  const bolus = bolusUnitsOf(t);
-  if (t.carbs > 0) parts.push(`${trim(t.carbs, 1)} г`);
-  if (bolus > 0) parts.push(`${trim(bolus, 2)} ед`);
-  const human = humanPart(t.notes);
-  if (human) parts.push(human);
-  if (isNotMeal(t.notes)) parts.push('не учитывать');
-  return parts.join(' · ') || 'заметка';
 }
 
 function loadSpan(): number {
@@ -58,12 +47,21 @@ function headerUk(row: Row): { uk: number; estimate: boolean; until: number } {
   return { uk: row.savedUk, estimate: false, until: 0 };
 }
 
-export function Home({ data, settings, now, onAdd }: { data: Snapshot; settings: Effective; now: number; onAdd: () => void }) {
+interface Props {
+  data: Snapshot;
+  settings: Effective;
+  now: number;
+  conn: Connection;
+  onAdd: () => void;
+  /** A change was sent to Nightscout: say so and reload. */
+  onChanged: (message: string) => void;
+}
+
+export function Home({ data, settings, now, conn, onAdd, onChanged }: Props) {
   const [follow, setFollow] = useState(true);
   const [manual, setManual] = useState<View>(() => liveView(loadSpan(), now));
   const view: View = follow ? liveView(manual.span, now) : manual;
-  const [card, setCard] = useState<Row | null>(null);
-  const [info, setInfo] = useState<Treatment | null>(null);
+  const [picked, setPicked] = useState<Picked | null>(null);
 
   const last = data.readings[data.readings.length - 1];
   const stale = !last || now - last.timestamp > STALE_MS;
@@ -84,18 +82,6 @@ export function Home({ data, settings, now, onAdd }: { data: Snapshot; settings:
     }
   };
 
-  useEffect(() => {
-    if (!info) return;
-    const id = setTimeout(() => setInfo(null), 6000);
-    return () => clearTimeout(id);
-  }, [info]);
-
-  const pick = (t: Treatment) => {
-    const row = mealRowFor(data, t, settings, now);
-    if (row) setCard(row);
-    else setInfo(t);
-  };
-
   const lm = lastMeal ? headerUk(lastMeal) : null;
   const lmCarbs = lastMeal ? (lastMeal.estimate?.pulled.carbGrams ?? lastMeal.meal.carbGrams) : 0;
 
@@ -103,7 +89,7 @@ export function Home({ data, settings, now, onAdd }: { data: Snapshot; settings:
     <div class="home">
       <div class="home-head">
         {lastMeal && lm ? (
-          <button class="last-meal" onClick={() => setCard(lastMeal)}>
+          <button class="last-meal" onClick={() => setPicked({ kind: 'entry', entry: lastMeal.meal.treatment })}>
             <div class="last-meal-title">
               {MEAL_LABEL[lastMeal.type]} · {dayLabel(lastMeal.meal.timestamp, now) === 'сегодня' ? '' : 'вчера '}
               {hhmm(lastMeal.meal.timestamp)} · {trim(lmCarbs / settings.gramsPerBreadUnit, 1)} ХЕ
@@ -140,7 +126,8 @@ export function Home({ data, settings, now, onAdd }: { data: Snapshot; settings:
           oldest={oldest}
           view={view}
           onView={onView}
-          onPickEntry={pick}
+          onPickEntry={(entry) => setPicked({ kind: 'entry', entry })}
+          onPickMeter={(meter) => setPicked({ kind: 'meter', meter })}
         >
           <button class="chart-fab" aria-label="Добавить запись" onClick={onAdd}>
             +
@@ -164,27 +151,19 @@ export function Home({ data, settings, now, onAdd }: { data: Snapshot; settings:
         onView={onView}
       />
 
-      {card && <MealCard row={card} settings={settings} now={now} onClose={() => setCard(null)} />}
-      {info && (
-        <div class="backdrop" onClick={(e) => e.target === e.currentTarget && setInfo(null)}>
-          <div class="sheet" role="dialog" aria-label="Запись">
-            <div class="sheet-grip" />
-            <div class="card-label">
-              {dayLabel(info.timestamp, now)} {hhmm(info.timestamp)}
-            </div>
-            <div style={{ fontSize: '20px', fontWeight: 800, marginTop: '6px' }}>{entryText(info)}</div>
-            <div class="caption" style={{ marginTop: '8px' }}>
-              {bolusUnitsOf(info) > 0 && info.carbs <= 0
-                ? 'Укол без еды — учтён в УК ближайших приёмов по таблице действия инсулина.'
-                : info.carbs > 0
-                  ? 'Доедание — учтено в УК своего приёма.'
-                  : ''}
-            </div>
-            <button class="btn btn-ghost btn-block" style={{ marginTop: '14px' }} onClick={() => setInfo(null)}>
-              Закрыть
-            </button>
-          </div>
-        </div>
+      {picked && (
+        <EntryDetails
+          picked={picked}
+          conn={conn}
+          data={data}
+          settings={settings}
+          now={now}
+          onClose={() => setPicked(null)}
+          onDone={(message) => {
+            setPicked(null);
+            onChanged(message);
+          }}
+        />
       )}
     </div>
   );

@@ -113,6 +113,11 @@ export function App() {
     saveSettings(s);
     setSettings(s);
   };
+  // a change or deletion was sent: say so, and reload — the waiting request already shows the result
+  const onChanged = (message: string) => {
+    setToast(message);
+    void store.refresh();
+  };
 
   const data = store.data;
   let body: JSX.Element;
@@ -125,9 +130,9 @@ export function App() {
       </div>
     );
   } else if (tab === 'home') {
-    body = <Home data={data} settings={eff} now={now} onAdd={() => setAdding(true)} />;
+    body = <Home data={data} settings={eff} now={now} conn={conn} onAdd={() => setAdding(true)} onChanged={onChanged} />;
   } else if (tab === 'meals') {
-    body = <Meals data={data} settings={eff} now={now} />;
+    body = <Meals data={data} settings={eff} now={now} conn={conn} onChanged={onChanged} />;
   } else {
     body = <Dose data={data} settings={eff} now={now} />;
   }

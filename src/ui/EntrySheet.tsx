@@ -104,8 +104,8 @@ export function EntrySheet({ conn, entries, settings, onClose, onSaved }: Props)
             <input class="input input-big" inputMode="decimal" placeholder="0" value={insulin} onInput={(e) => setInsulin(e.currentTarget.value)} />
           </label>
           <label class="field" style={{ marginTop: 0 }}>
-            <span>Сахар из пальца</span>
-            <input class="input input-big" inputMode="decimal" placeholder="—" value={bgText} onInput={(e) => setBgText(e.currentTarget.value)} />
+            <span>Глюкометр</span>
+            <input class="input input-big unit-ph" inputMode="decimal" placeholder="ммоль/л" value={bgText} onInput={(e) => setBgText(e.currentTarget.value)} />
           </label>
         </div>
         {!bgOk && <div class="caption" style={{ color: 'var(--danger)' }}>Сахар — в ммоль/л, от 1 до 33</div>}

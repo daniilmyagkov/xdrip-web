@@ -10,6 +10,7 @@
 import type { BgPoint } from '../core/selection';
 import type { Treatment } from '../core/treatment';
 import { mgdlToMmol } from '../core/units';
+import { isRequestDoc, parseRequest, requestDoc, type PendingRequest, type SiteRequest } from './requests';
 
 export interface Connection {
   /** e.g. https://example.nightscout.host (no trailing slash, no /api). */
@@ -55,6 +56,9 @@ interface NsTreatment {
 export interface MeterReading {
   timestamp: number;
   mmol: number;
+  /** Nightscout documents holding it ("BG Check" treatments, "mbg" entries) — to delete it everywhere. */
+  nsTreatmentIds?: string[];
+  nsEntryIds?: string[];
 }
 
 interface NsEntry {
@@ -121,7 +125,15 @@ export function mergeMeter(a: readonly MeterReading[], b: readonly MeterReading[
   const out: MeterReading[] = [];
   for (const m of [...a, ...b].sort((x, y) => x.timestamp - y.timestamp)) {
     const prev = out[out.length - 1];
-    if (prev && Math.abs(prev.timestamp - m.timestamp) <= 90_000 && Math.abs(prev.mmol - m.mmol) < 0.15) continue;
+    if (prev && Math.abs(prev.timestamp - m.timestamp) <= 90_000 && Math.abs(prev.mmol - m.mmol) < 0.15) {
+      // the same reading: remember where else it lives, so deleting it removes every copy
+      out[out.length - 1] = {
+        ...prev,
+        nsTreatmentIds: [...(prev.nsTreatmentIds ?? []), ...(m.nsTreatmentIds ?? [])],
+        nsEntryIds: [...(prev.nsEntryIds ?? []), ...(m.nsEntryIds ?? [])],
+      };
+      continue;
+    }
     out.push(m);
   }
   return out;
@@ -141,6 +153,8 @@ export function toTreatment(t: NsTreatment): Treatment | null {
     notes: t.notes ?? null,
     eventType: t.eventType ?? null,
     enteredBy: t.enteredBy ?? null,
+    nsId: t._id ?? null,
+    uuid: t.uuid ?? null,
   };
 }
 
@@ -178,8 +192,12 @@ export const ns = {
     return out.sort((a, b) => a.timestamp - b.timestamp);
   },
 
-  /** Food / insulin / note entries, plus the finger-sticks that came as "BG Check" treatments. */
-  async treatments(c: Connection, from: number, to: number = Date.now() + 24 * 3_600_000): Promise<{ entries: Treatment[]; checks: MeterReading[] }> {
+  /** Food / insulin / note entries, the finger-sticks that came as "BG Check" treatments, and the site's requests still waiting for the master. */
+  async treatments(
+    c: Connection,
+    from: number,
+    to: number = Date.now() + 24 * 3_600_000,
+  ): Promise<{ entries: Treatment[]; checks: MeterReading[]; requests: PendingRequest[] }> {
     const rows = await request<NsTreatment[]>(c, '/api/v1/treatments.json', {
       params: {
         'find[created_at][$gte]': new Date(from).toISOString(),
@@ -189,30 +207,46 @@ export const ns = {
     });
     const out: Treatment[] = [];
     const checks: MeterReading[] = [];
+    const requests: PendingRequest[] = [];
     for (const r of rows ?? []) {
+      const doc = r as unknown as Record<string, unknown>;
+      if (isRequestDoc(doc)) {
+        const p = parseRequest(doc);
+        if (p) requests.push(p);
+        continue;
+      }
       const t = toTreatment(r);
       if (!t) continue;
       const bg = fingerBgOf(r);
-      if (bg !== null) checks.push({ timestamp: t.timestamp, mmol: bg });
+      if (bg !== null) checks.push({ timestamp: t.timestamp, mmol: bg, nsTreatmentIds: r._id ? [r._id] : [] });
       // a pure finger-stick is not a food / insulin / note entry
       if (bg !== null && t.carbs <= 0 && t.insulin <= 0 && !t.notes) continue;
       if (r._id) nsIds.set(t.id, r._id);
       out.push(t);
     }
-    return { entries: out.sort((a, b) => a.timestamp - b.timestamp), checks };
+    return { entries: out.sort((a, b) => a.timestamp - b.timestamp), checks, requests };
   },
 
   /** Finger-sticks the master uploaded (xDrip sends them as "mbg" entries). */
   async meterEntries(c: Connection, from: number, to: number = Date.now() + 60_000): Promise<MeterReading[]> {
-    const rows = await request<Array<{ date?: number; mbg?: number }>>(c, '/api/v1/entries/mbg.json', {
+    const rows = await request<Array<{ _id?: string; date?: number; mbg?: number }>>(c, '/api/v1/entries/mbg.json', {
       params: { 'find[date][$gte]': from, 'find[date][$lte]': to, count: 2000 },
     });
     const out: MeterReading[] = [];
     for (const r of rows ?? []) {
       if (typeof r.date !== 'number' || typeof r.mbg !== 'number' || r.mbg <= 0 || r.mbg >= 1000) continue;
-      out.push({ timestamp: r.date, mmol: mgdlToMmol(r.mbg) });
+      out.push({ timestamp: r.date, mmol: mgdlToMmol(r.mbg), nsEntryIds: r._id ? [r._id] : [] });
     }
     return out;
+  },
+
+  /** Asks the master to change or delete an existing entry (see ns/requests.ts). */
+  async sendRequest(c: Connection, r: SiteRequest): Promise<void> {
+    await request(c, '/api/v1/treatments.json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([requestDoc(r, Date.now())]),
+    });
   },
 
   /** Adds a food / insulin / note entry. The master picks it up from Nightscout and syncs it on. */
