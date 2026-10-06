@@ -5,7 +5,7 @@ import { humanPart, isAutoUk, parseUk } from '../core/notes';
 import { estimateMeal, type MealEstimate } from '../core/pull';
 import { recentMeals, type Meal } from '../core/roles';
 import type { Effective } from '../core/settings';
-import { bolusUnitsOf } from '../core/treatment';
+import { bolusUnitsOf, type Treatment } from '../core/treatment';
 import { DAY_MS } from '../core/units';
 import { READINGS_DAYS, type Snapshot } from '../state/store';
 import { dayLabel, hhmm, MEAL_LABEL, mmol, num, trim } from './format';
@@ -18,26 +18,46 @@ const FILTERS: Array<[Filter, string]> = [
   ['DINNER', 'Ужин'],
 ];
 
-interface Row {
+export interface Row {
   meal: Meal;
   type: MealType;
   savedUk: number;
   estimate: MealEstimate | null;
 }
 
+function rowFor(data: Snapshot, meal: Meal, settings: Effective, now: number): Row {
+  const t = meal.treatment;
+  const readingsFrom = now - READINGS_DAYS * DAY_MS + 3 * 3_600_000; // need a pre-meal reading too
+  return {
+    meal,
+    type: classify(t.timestamp, t.notes, settings.mealHours),
+    savedUk: parseUk(t.notes),
+    estimate: meal.timestamp >= readingsFrom ? estimateMeal(data, t, now, settings) : null,
+  };
+}
+
+/** The meal card data for an entry tapped on the graph — null when the entry is not a meal of its own. */
+export function mealRowFor(data: Snapshot, entry: Treatment, settings: Effective, now: number): Row | null {
+  const meal = recentMeals(data.entries, now, 30 * DAY_MS, settings.workoutMs).find((m) => m.treatment.id === entry.id);
+  return meal ? rowFor(data, meal, settings, now) : null;
+}
+
+/** The newest meal (for the home header), or null. */
+export function lastMealRow(data: Snapshot, settings: Effective, now: number): Row | null {
+  const meals = recentMeals(data.entries, now, 2 * DAY_MS, settings.workoutMs);
+  let newest: Meal | null = null;
+  for (const m of meals) if (!newest || m.timestamp > newest.timestamp) newest = m;
+  return newest ? rowFor(data, newest, settings, now) : null;
+}
+
 export function Meals({ data, settings, now }: { data: Snapshot; settings: Effective; now: number }) {
   const [filter, setFilter] = useState<Filter>('ALL');
   const [open, setOpen] = useState<Row | null>(null);
 
-  const rows = useMemo<Row[]>(() => {
-    const readingsFrom = now - READINGS_DAYS * DAY_MS + 3 * 3_600_000; // need a pre-meal reading too
-    return recentMeals(data.entries, now, 30 * DAY_MS, settings.workoutMs).map((meal) => {
-      const t = meal.treatment;
-      const savedUk = parseUk(t.notes);
-      const estimate = meal.timestamp >= readingsFrom ? estimateMeal(data, t, now, settings) : null;
-      return { meal, type: classify(t.timestamp, t.notes, settings.mealHours), savedUk, estimate };
-    });
-  }, [data, settings, now]);
+  const rows = useMemo<Row[]>(
+    () => recentMeals(data.entries, now, 30 * DAY_MS, settings.workoutMs).map((meal) => rowFor(data, meal, settings, now)),
+    [data, settings, now],
+  );
 
   const shown = rows.filter((r) => filter === 'ALL' || r.type === filter);
 
@@ -65,7 +85,7 @@ export function Meals({ data, settings, now }: { data: Snapshot; settings: Effec
   );
 }
 
-function ukLine(r: Row): { text: string; estimate: boolean } | null {
+export function ukLine(r: Row): { text: string; estimate: boolean } | null {
   if (Number.isFinite(r.savedUk)) return { text: `УК ${num(r.savedUk, 2)} ед/ХЕ`, estimate: false };
   const est = r.estimate;
   if (est?.result.computed) {
@@ -102,7 +122,7 @@ const ISF_ORIGIN: Record<string, string> = {
   NONE: 'нет данных',
 };
 
-function MealCard({ row, settings, now, onClose }: { row: Row; settings: Effective; now: number; onClose: () => void }) {
+export function MealCard({ row, settings, now, onClose }: { row: Row; settings: Effective; now: number; onClose: () => void }) {
   const t = row.meal.treatment;
   const est = row.estimate;
   const p = est?.pulled;

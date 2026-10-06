@@ -125,7 +125,7 @@ export function App() {
       </div>
     );
   } else if (tab === 'home') {
-    body = <Home data={data} now={now} onAdd={() => setAdding(true)} />;
+    body = <Home data={data} settings={eff} now={now} onAdd={() => setAdding(true)} />;
   } else if (tab === 'meals') {
     body = <Meals data={data} settings={eff} now={now} />;
   } else {

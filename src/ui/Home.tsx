@@ -1,13 +1,20 @@
-/** Главная: current glucose, trend, graph, today's entries. */
-import { useState } from 'preact/hooks';
-import { humanPart, isNotMeal, parseUk } from '../core/notes';
+/**
+ * Главная — the phone's home screen: the newest meal with its УК on the left and the glucose on the
+ * right, then the graph (scroll / zoom / tap a meal) with the green «+» on it, and the 24 h strip.
+ */
+import { useEffect, useMemo, useState } from 'preact/hooks';
+import { humanPart, isNotMeal } from '../core/notes';
+import type { Effective } from '../core/settings';
 import { bolusUnitsOf, type Treatment } from '../core/treatment';
 import type { Snapshot } from '../state/store';
-import { Chart } from './Chart';
-import { arrow, hhmm, minutesAgo, mmol, num, trim } from './format';
+import { DEFAULT_SPAN, futureMargin, liveView, type View } from './chartModel';
+import { arrow, dayLabel, hhmm, MEAL_LABEL, minutesAgo, mmol, num, trim } from './format';
+import { GlucoseChart } from './GlucoseChart';
+import { lastMealRow, MealCard, mealRowFor, type Row } from './Meals';
+import { Overview } from './Overview';
 
-const RANGES = [3, 6, 12, 24] as const;
 const STALE_MS = 11 * 60_000;
+const SPAN_KEY = 'xdripweb.span';
 
 function delta(readings: Snapshot['readings']): number {
   const last = readings[readings.length - 1];
@@ -33,79 +40,152 @@ export function entryText(t: Treatment): string {
   return parts.join(' · ') || 'заметка';
 }
 
-export function Home({ data, now, onAdd }: { data: Snapshot; now: number; onAdd: () => void }) {
-  const [hours, setHours] = useState<number>(() => Number(localStorage.getItem('xdripweb.hours')) || 6);
+function loadSpan(): number {
+  try {
+    const v = Number(localStorage.getItem(SPAN_KEY));
+    return Number.isFinite(v) && v > 0 ? v : DEFAULT_SPAN;
+  } catch {
+    return DEFAULT_SPAN;
+  }
+}
+
+/** УК shown for a meal: the live recomputation while possible, else the saved one (as on the phone). */
+function headerUk(row: Row): { uk: number; estimate: boolean; until: number } {
+  const est = row.estimate;
+  if (est?.result.computed && Number.isFinite(est.result.insulinPerBreadUnit)) {
+    return { uk: est.result.insulinPerBreadUnit, estimate: !est.pulled.windowComplete, until: est.pulled.expectedEndTime };
+  }
+  return { uk: row.savedUk, estimate: false, until: 0 };
+}
+
+export function Home({ data, settings, now, onAdd }: { data: Snapshot; settings: Effective; now: number; onAdd: () => void }) {
+  const [follow, setFollow] = useState(true);
+  const [manual, setManual] = useState<View>(() => liveView(loadSpan(), now));
+  const view: View = follow ? liveView(manual.span, now) : manual;
+  const [card, setCard] = useState<Row | null>(null);
+  const [info, setInfo] = useState<Treatment | null>(null);
+
   const last = data.readings[data.readings.length - 1];
   const stale = !last || now - last.timestamp > STALE_MS;
   const out = last && (last.mmol > data.thresholds.high || last.mmol < data.thresholds.low);
   const d = delta(data.readings);
-  // last 24 h rather than "since midnight", so the list isn't empty right after midnight
-  const inDay = (ts: number) => ts >= now - 24 * 3_600_000 && ts <= now + 3_600_000;
-  type Row = { ts: number; key: string; entry?: Treatment; meterMmol?: number };
-  const recent: Row[] = [
-    ...data.entries.filter((t) => inDay(t.timestamp)).map((t): Row => ({ ts: t.timestamp, key: t.id, entry: t })),
-    ...data.meter.filter((m) => inDay(m.timestamp)).map((m): Row => ({ ts: m.timestamp, key: `bg${m.timestamp}`, meterMmol: m.mmol })),
-  ].sort((a, b) => b.ts - a.ts);
-  const midnight = new Date(now).setHours(0, 0, 0, 0);
+  const oldest = data.readings[0]?.timestamp ?? now - 24 * 3_600_000;
+  const lastMeal = useMemo(() => lastMealRow(data, settings, now), [data, settings, now]);
 
-  const pick = (h: number) => {
-    setHours(h);
+  const onView = (v: View) => {
+    // back at the right edge → follow new data again
+    const atNow = v.end >= now + futureMargin(v.span) - 60_000;
+    setFollow(atNow);
+    setManual(v);
     try {
-      localStorage.setItem('xdripweb.hours', String(h));
+      localStorage.setItem(SPAN_KEY, String(Math.round(v.span)));
     } catch {
       /* ignore */
     }
   };
 
+  useEffect(() => {
+    if (!info) return;
+    const id = setTimeout(() => setInfo(null), 6000);
+    return () => clearTimeout(id);
+  }, [info]);
+
+  const pick = (t: Treatment) => {
+    const row = mealRowFor(data, t, settings, now);
+    if (row) setCard(row);
+    else setInfo(t);
+  };
+
+  const lm = lastMeal ? headerUk(lastMeal) : null;
+  const lmCarbs = lastMeal ? (lastMeal.estimate?.pulled.carbGrams ?? lastMeal.meal.carbGrams) : 0;
+
   return (
-    <div class="screen">
-      <div class="hero">
-        <div class={`hero-value ${stale ? 'stale' : out ? 'out' : ''}`}>{last ? mmol(last.mmol) : '—'}</div>
-        <div class="hero-arrow">{last && !stale ? arrow(last.direction) : ''}</div>
-        <div class="hero-meta">
-          <div>
-            <b>{Number.isFinite(d) ? `${d >= 0 ? '+' : '−'}${num(Math.abs(d), 1)}` : ''}</b> ммоль/л
+    <div class="home">
+      <div class="home-head">
+        {lastMeal && lm ? (
+          <button class="last-meal" onClick={() => setCard(lastMeal)}>
+            <div class="last-meal-title">
+              {MEAL_LABEL[lastMeal.type]} · {dayLabel(lastMeal.meal.timestamp, now) === 'сегодня' ? '' : 'вчера '}
+              {hhmm(lastMeal.meal.timestamp)} · {trim(lmCarbs / settings.gramsPerBreadUnit, 1)} ХЕ
+            </div>
+            <div class="last-meal-uk">
+              {Number.isFinite(lm.uk) ? `${lm.estimate ? '≈ ' : ''}УК ${num(lm.uk, 2)}` : 'УК —'}
+              {lm.estimate && lm.until > 0 && <span class="last-meal-until">до {hhmm(lm.until)}</span>}
+            </div>
+          </button>
+        ) : (
+          <div class="last-meal" />
+        )}
+        <div class="glu">
+          <div class="glu-row">
+            <div class={`glu-value ${stale ? 'stale' : out ? 'out' : ''}`}>{last ? mmol(last.mmol) : '—'}</div>
+            <div class="glu-arrow">{last && !stale ? arrow(last.direction) : ''}</div>
           </div>
-          <div class="small">{last ? minutesAgo(last.timestamp, now) : 'нет данных'}</div>
+          <div class="glu-meta">
+            {Number.isFinite(d) ? `${d >= 0 ? '+' : '−'}${num(Math.abs(d), 1)} ммоль/л · ` : ''}
+            {last ? minutesAgo(last.timestamp, now) : 'нет данных'}
+          </div>
         </div>
       </div>
 
-      <div class="chips" style={{ marginBottom: '8px' }}>
-        {RANGES.map((h) => (
-          <button class={`chip ${hours === h ? 'on' : ''}`} key={h} onClick={() => pick(h)}>
-            {h} ч
+      <div class="home-chart">
+        <GlucoseChart
+          readings={data.readings}
+          entries={data.entries}
+          meter={data.meter}
+          low={data.thresholds.low}
+          high={data.thresholds.high}
+          target={settings.defaultTargetMmol}
+          now={now}
+          oldest={oldest}
+          view={view}
+          onView={onView}
+          onPickEntry={pick}
+        >
+          <button class="chart-fab" aria-label="Добавить запись" onClick={onAdd}>
+            +
           </button>
-        ))}
-      </div>
-      <div class="card" style={{ padding: '6px 4px' }}>
-        <Chart readings={data.readings} entries={data.entries} hours={hours} low={data.thresholds.low} high={data.thresholds.high} now={now} />
+          {!follow ? (
+            <button class="chip on chart-now" onClick={() => setFollow(true)}>
+              Сейчас →
+            </button>
+          ) : null}
+        </GlucoseChart>
       </div>
 
-      <div class="screen-title" style={{ fontSize: '17px', marginTop: '20px' }}>
-        За сутки
-      </div>
-      {recent.length === 0 ? (
-        <div class="empty">Записей пока нет</div>
-      ) : (
-        <div class="stack">
-          {recent.map((row) => {
-            const uk = row.entry ? parseUk(row.entry.notes) : NaN;
-            return (
-              <div class="card row" key={row.key}>
-                <div class="muted" style={{ width: '52px', lineHeight: 1.15 }}>
-                  {hhmm(row.ts)}
-                  {row.ts < midnight && <div class="small">вчера</div>}
-                </div>
-                <div style={{ flex: 1 }}>{row.entry ? entryText(row.entry) : `${mmol(row.meterMmol ?? NaN)} ммоль/л · из пальца`}</div>
-                {Number.isFinite(uk) && <span class="badge accent">УК {num(uk, 2)}</span>}
-              </div>
-            );
-          })}
+      <Overview
+        readings={data.readings}
+        entries={data.entries}
+        low={data.thresholds.low}
+        high={data.thresholds.high}
+        now={now}
+        oldest={oldest}
+        view={view}
+        onView={onView}
+      />
+
+      {card && <MealCard row={card} settings={settings} now={now} onClose={() => setCard(null)} />}
+      {info && (
+        <div class="backdrop" onClick={(e) => e.target === e.currentTarget && setInfo(null)}>
+          <div class="sheet" role="dialog" aria-label="Запись">
+            <div class="sheet-grip" />
+            <div class="card-label">
+              {dayLabel(info.timestamp, now)} {hhmm(info.timestamp)}
+            </div>
+            <div style={{ fontSize: '20px', fontWeight: 800, marginTop: '6px' }}>{entryText(info)}</div>
+            <div class="caption" style={{ marginTop: '8px' }}>
+              {bolusUnitsOf(info) > 0 && info.carbs <= 0
+                ? 'Укол без еды — учтён в УК ближайших приёмов по таблице действия инсулина.'
+                : info.carbs > 0
+                  ? 'Доедание — учтено в УК своего приёма.'
+                  : ''}
+            </div>
+            <button class="btn btn-ghost btn-block" style={{ marginTop: '14px' }} onClick={() => setInfo(null)}>
+              Закрыть
+            </button>
+          </div>
         </div>
       )}
-      <button class="fab" aria-label="Добавить запись" onClick={onAdd}>
-        +
-      </button>
     </div>
   );
 }
