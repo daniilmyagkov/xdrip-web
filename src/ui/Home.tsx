@@ -40,7 +40,12 @@ export function Home({ data, now, onAdd }: { data: Snapshot; now: number; onAdd:
   const out = last && (last.mmol > data.thresholds.high || last.mmol < data.thresholds.low);
   const d = delta(data.readings);
   // last 24 h rather than "since midnight", so the list isn't empty right after midnight
-  const recent = data.entries.filter((t) => t.timestamp >= now - 24 * 3_600_000 && t.timestamp <= now + 3_600_000).slice().reverse();
+  const inDay = (ts: number) => ts >= now - 24 * 3_600_000 && ts <= now + 3_600_000;
+  type Row = { ts: number; key: string; entry?: Treatment; meterMmol?: number };
+  const recent: Row[] = [
+    ...data.entries.filter((t) => inDay(t.timestamp)).map((t): Row => ({ ts: t.timestamp, key: t.id, entry: t })),
+    ...data.meter.filter((m) => inDay(m.timestamp)).map((m): Row => ({ ts: m.timestamp, key: `bg${m.timestamp}`, meterMmol: m.mmol })),
+  ].sort((a, b) => b.ts - a.ts);
   const midnight = new Date(now).setHours(0, 0, 0, 0);
 
   const pick = (h: number) => {
@@ -83,15 +88,15 @@ export function Home({ data, now, onAdd }: { data: Snapshot; now: number; onAdd:
         <div class="empty">Записей пока нет</div>
       ) : (
         <div class="stack">
-          {recent.map((t) => {
-            const uk = parseUk(t.notes);
+          {recent.map((row) => {
+            const uk = row.entry ? parseUk(row.entry.notes) : NaN;
             return (
-              <div class="card row" key={t.id}>
+              <div class="card row" key={row.key}>
                 <div class="muted" style={{ width: '52px', lineHeight: 1.15 }}>
-                  {hhmm(t.timestamp)}
-                  {t.timestamp < midnight && <div class="small">вчера</div>}
+                  {hhmm(row.ts)}
+                  {row.ts < midnight && <div class="small">вчера</div>}
                 </div>
-                <div style={{ flex: 1 }}>{entryText(t)}</div>
+                <div style={{ flex: 1 }}>{row.entry ? entryText(row.entry) : `${mmol(row.meterMmol ?? NaN)} ммоль/л · из пальца`}</div>
                 {Number.isFinite(uk) && <span class="badge accent">УК {num(uk, 2)}</span>}
               </div>
             );

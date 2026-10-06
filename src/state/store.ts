@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import type { Treatment } from '../core/treatment';
 import { DAY_MS } from '../core/units';
-import { ns, NsError, type Connection, type Reading } from '../ns/client';
+import { mergeMeter, ns, NsError, type Connection, type MeterReading, type Reading } from '../ns/client';
 
 export const READINGS_DAYS = 4;
 export const ENTRIES_DAYS = 40;
@@ -14,6 +14,8 @@ const REFRESH_MS = 60_000;
 export interface Snapshot {
   readings: Reading[];
   entries: Treatment[];
+  /** Finger-stick (glucometer) readings. */
+  meter: MeterReading[];
   loadedAt: number;
   thresholds: { low: number; high: number };
 }
@@ -39,15 +41,19 @@ export function useStore(c: Connection | null): StoreState {
     setLoading(true);
     try {
       const now = Date.now();
-      const [readings, entries, status] = await Promise.all([
+      const [readings, treatments, mbg, status] = await Promise.all([
         ns.readings(c, now - READINGS_DAYS * DAY_MS),
         ns.treatments(c, now - ENTRIES_DAYS * DAY_MS),
+        ns.meterEntries(c, now - READINGS_DAYS * DAY_MS).catch(() => []),
         ns.status(c).catch(() => null),
       ]);
+      const entries = treatments.entries;
+      const meter = mergeMeter(treatments.checks, mbg);
       const th = (status as { settings?: { thresholds?: { bgTargetBottom?: number; bgTargetTop?: number } } } | null)?.settings?.thresholds;
       setData({
         readings,
         entries,
+        meter,
         loadedAt: now,
         thresholds: {
           low: th?.bgTargetBottom ? th.bgTargetBottom / MGDL : 3.9,

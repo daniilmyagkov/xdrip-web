@@ -41,6 +41,7 @@ export function EntrySheet({ conn, entries, settings, onClose, onSaved }: Props)
   const [openedAt] = useState(() => Date.now());
   const [carbs, setCarbs] = useState('');
   const [insulin, setInsulin] = useState('');
+  const [bgText, setBgText] = useState('');
   const [time, setTime] = useState(() => hhmm(openedAt));
   const [note, setNote] = useState('');
   const [roleOverride, setRoleOverride] = useState<Role | null>(null);
@@ -50,12 +51,14 @@ export function EntrySheet({ conn, entries, settings, onClose, onSaved }: Props)
 
   const c = parse(carbs);
   const u = parse(insulin);
+  const bg = parse(bgText);
+  const bgOk = bg === 0 || (bg >= 1 && bg <= 33);
   const { ts, yesterday } = timestampFor(time, openedAt);
   const auto = useMemo(() => defaultForNewEntry(entries, ts, c, u, settings.workoutMs, settings.mealHours), [entries, ts, c, u, settings]);
   const autoType = classifyTime(ts, settings.mealHours);
   const role = roleOverride ?? auto.role;
   const type = typeOverride ?? autoType;
-  const canSave = (c > 0 || u > 0 || note.trim() !== '') && !saving;
+  const canSave = (c > 0 || u > 0 || bg > 0 || note.trim() !== '') && bgOk && !saving;
 
   async function save() {
     setSaving(true);
@@ -65,7 +68,7 @@ export function EntrySheet({ conn, entries, settings, onClose, onSaved }: Props)
     if (c > 0 && roleOverride !== null && roleOverride !== auto.role) notes = setRole(notes, roleOverride);
     if (c > 0 && role === 'SEPARATE' && type !== autoType) notes = setMealType(notes, type);
     try {
-      await ns.addTreatment(conn, { timestamp: ts, carbs: c, insulin: u, notes });
+      await ns.addTreatment(conn, { timestamp: ts, carbs: c, insulin: u, notes, bgMmol: bg });
       onSaved('Сохранено. На телефоны придёт в течение 1–2 минут');
       onClose();
     } catch (e) {
@@ -91,7 +94,7 @@ export function EntrySheet({ conn, entries, settings, onClose, onSaved }: Props)
             Отмена
           </button>
         </div>
-        <div class="grid2" style={{ marginTop: '14px' }}>
+        <div class="grid3" style={{ marginTop: '14px' }}>
           <label class="field" style={{ marginTop: 0 }}>
             <span>Углеводы, г</span>
             <input class="input input-big" inputMode="decimal" placeholder="0" value={carbs} onInput={(e) => setCarbs(e.currentTarget.value)} />
@@ -100,7 +103,12 @@ export function EntrySheet({ conn, entries, settings, onClose, onSaved }: Props)
             <span>Инсулин, ед</span>
             <input class="input input-big" inputMode="decimal" placeholder="0" value={insulin} onInput={(e) => setInsulin(e.currentTarget.value)} />
           </label>
+          <label class="field" style={{ marginTop: 0 }}>
+            <span>Сахар из пальца</span>
+            <input class="input input-big" inputMode="decimal" placeholder="—" value={bgText} onInput={(e) => setBgText(e.currentTarget.value)} />
+          </label>
         </div>
+        {!bgOk && <div class="caption" style={{ color: 'var(--danger)' }}>Сахар — в ммоль/л, от 1 до 33</div>}
         <label class="field">
           <span>Время</span>
           <div class="row">
