@@ -10,7 +10,7 @@ import type { ComponentChildren } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { Treatment } from '../core/treatment';
 import type { MeterReading, Reading } from '../ns/client';
-import { buildMarkers, clampView, timeTicks, yRange, type View } from './chartModel';
+import { buildMarkers, clampView, labelBox, pickMarker, timeTicks, yRange, type View } from './chartModel';
 import { hhmm, mmol } from './format';
 import { useSize } from './useSize';
 
@@ -83,10 +83,13 @@ export function GlucoseChart({ readings, entries, meter, low, high, target, now,
     pointers: Map<number, { x: number; y: number }>;
     startView: View;
     startX: number;
+    startY: number;
     startDist: number;
     startMid: number;
+    /** The graph is being dragged or pinched. */
     moved: boolean;
-    downAt: number;
+    /** Still a tap: one finger that has stayed on its spot (however long it is held). */
+    tap: boolean;
   } | null>(null);
 
   const localX = (e: PointerEvent | WheelEvent) => {
@@ -109,13 +112,14 @@ export function GlucoseChart({ readings, entries, meter, low, high, target, now,
     } catch {
       /* not a live pointer — still handle the gesture */
     }
-    const g = gesture.current ?? { pointers: new Map(), startView: view, startX: 0, startDist: 0, startMid: 0, moved: false, downAt: Date.now() };
+    const g = gesture.current ?? { pointers: new Map(), startView: view, startX: 0, startY: 0, startDist: 0, startMid: 0, moved: false, tap: false };
     g.pointers.set(e.pointerId, { x: localX(e), y: localY(e) });
     g.startView = live.current.view;
+    g.tap = g.pointers.size === 1;
     if (g.pointers.size === 1) {
       g.startX = localX(e);
+      g.startY = localY(e);
       g.moved = false;
-      g.downAt = Date.now();
     } else if (g.pointers.size === 2) {
       const [a, b] = [...g.pointers.values()];
       if (a && b) {
@@ -147,19 +151,22 @@ export function GlucoseChart({ readings, entries, meter, low, high, target, now,
     }
     const dx = localX(e) - g.startX;
     if (Math.abs(dx) > TAP_SLOP) g.moved = true;
+    if (Math.hypot(dx, localY(e) - g.startY) > TAP_SLOP) g.tap = false;
     if (g.moved) emit({ end: g.startView.end - (dx / pw) * g.startView.span, span: g.startView.span });
   };
 
-  const onPointerUp = (e: PointerEvent) => {
+  // a finger / button lifted; a cancelled pointer (the browser took it over) is never a tap
+  const release = (e: PointerEvent, cancelled: boolean) => {
     const g = gesture.current;
     if (!g) return;
-    const wasTap = g.pointers.size === 1 && !g.moved && Date.now() - g.downAt < 600;
+    const wasTap = !cancelled && g.tap && !g.moved && g.pointers.size === 1 && g.pointers.has(e.pointerId);
     g.pointers.delete(e.pointerId);
     if (g.pointers.size === 1) {
       // second finger lifted: continue as a one-finger drag from here
       const [rest] = [...g.pointers.values()];
       g.startView = live.current.view;
       g.startX = rest ? rest.x : 0;
+      g.startY = rest ? rest.y : 0;
     }
     if (g.pointers.size === 0) gesture.current = null;
     if (wasTap) hitTest(localX(e), localY(e));
@@ -194,17 +201,11 @@ export function GlucoseChart({ readings, entries, meter, low, high, target, now,
   }, [tip]);
 
   function hitTest(px: number, py: number) {
-    // a food / insulin / note marker first (generous finger-sized target), then the nearest dot
-    let best: { d: number; t: Treatment } | null = null;
-    for (const m of model.markers) {
-      const mx = x(m.entry.timestamp);
-      const my = y(m.y);
-      const d = Math.hypot(mx - px, (my - py) * 0.8);
-      if (d < 30 && (!best || d < best.d)) best = { d, t: m.entry };
-    }
-    if (best) {
+    // a food / insulin / note marker first (its dot within a finger's reach, or anywhere on its label), then the nearest dot
+    const picked = pickMarker(model.markers, px, py, (m) => [x(m.entry.timestamp), y(m.y)]);
+    if (picked) {
       setTip(null);
-      onPickEntry(best.t);
+      onPickEntry(picked);
       return;
     }
     let near: Reading | null = null;
@@ -253,8 +254,11 @@ export function GlucoseChart({ readings, entries, meter, low, high, target, now,
         viewBox={`0 0 ${Math.max(1, w)} ${Math.max(1, h)}`}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        onPointerUp={(e) => release(e, false)}
+        onPointerCancel={(e) => release(e, true)}
+        // the graph handles its own taps: no follow-up "click" from the browser, which would land on the
+        // meal card the tap has just opened (on its dimmed backdrop, closing it at once)
+        onTouchEnd={(e) => e.cancelable && e.preventDefault()}
         role="img"
         aria-label="График сахара"
       >
@@ -302,12 +306,12 @@ export function GlucoseChart({ readings, entries, meter, low, high, target, now,
               if (m.noteOnly) {
                 return <rect key={m.entry.id} x={mx - 6} y={my - 7} width={12} height={14} rx={2} fill={C.note} />;
               }
-              const tw = m.label.length * 7.4 + 10;
+              const b = labelBox(m.label, mx, my);
               return (
                 <g key={m.entry.id}>
                   {m.label && (
                     <>
-                      <rect x={mx - tw / 2} y={my - 30} width={tw} height={20} rx={3} fill={C.marker} />
+                      <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={3} fill={C.marker} />
                       <text x={mx} y={my - 15.5} fill="#fff" font-size="13" font-weight="800" text-anchor="middle">
                         {m.label}
                       </text>

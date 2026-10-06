@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildMarkers, clampView, futureMargin, markerLabel, markerY, MAX_SPAN, MIN_SPAN, timeTicks } from '../src/ui/chartModel';
+import { buildMarkers, clampView, futureMargin, labelBox, markerLabel, markerY, MAX_SPAN, MIN_SPAN, pickMarker, timeTicks, type Marker } from '../src/ui/chartModel';
 import type { Treatment } from '../src/core/treatment';
 
 const t = (timestamp: number, carbs: number, insulin: number, notes: string | null = null): Treatment => ({ id: String(timestamp), timestamp, carbs, insulin, notes });
@@ -22,11 +22,31 @@ describe('treatment markers, as the phone draws them', () => {
   it('merge labels of entries within 10 minutes', () => {
     const m = buildMarkers([t(0, 60, 6), t(5 * M, 0, 2), t(30 * M, 0, 1)], 3.9, 9.4);
     expect(m.map((x) => x.label)).toEqual(['6u60g+2u', '', '1u']);
+    expect(m.map((x) => x.owner)).toEqual([0, 0, 2]);
   });
   it('show notes, skip empty entries', () => {
     const m = buildMarkers([t(0, 0, 0, 'бег'), t(H, 0, 0, null)], 3.9, 9.4);
     expect(m).toHaveLength(1);
     expect(m[0]?.noteOnly).toBe(true);
+  });
+});
+
+describe('tapping a marker', () => {
+  // 2 px per minute, 20 px per mmol/L: the 12 U meal sits at (100, 100), the 2 U top-up at (110, 222)
+  const at = (m: Marker): [number, number] => [100 + (m.entry.timestamp / M) * 2, 300 - m.y * 20];
+  const markers = buildMarkers([t(0, 80, 12), t(5 * M, 0, 2), t(3 * H, 0, 1.5)], 3.9, 10);
+  const label = labelBox('12u80g+2u', 100, 100);
+
+  it('anywhere on a merged label opens the meal, also over the top-up part of it', () => {
+    expect(pickMarker(markers, label.x + label.w - 3, label.y + label.h / 2, at)?.carbs).toBe(80);
+    expect(pickMarker(markers, label.x + 3, label.y + 3, at)?.carbs).toBe(80);
+  });
+  it('a dot within a finger’s reach opens that entry', () => {
+    expect(pickMarker(markers, 110, 222, at)?.insulin).toBe(2);
+    expect(pickMarker(markers, 120, 110, at)?.carbs).toBe(80);
+  });
+  it('nothing when the tap is away from every marker', () => {
+    expect(pickMarker(markers, 300, 250, at)).toBeNull();
   });
 });
 

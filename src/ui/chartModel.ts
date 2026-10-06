@@ -62,26 +62,66 @@ export interface Marker {
   y: number;
   /** Shown label ("" when it was merged into the previous marker's label). */
   label: string;
+  /** Index of the marker whose label shows this entry: its own, or the one it was merged into. */
+  owner: number;
   noteOnly: boolean;
 }
 
 /** Markers for the entries in time order; entries within 10 min merge their labels with "+" (phone rule). */
 export function buildMarkers(entries: readonly Treatment[], low: number, high: number): Marker[] {
   const out: Marker[] = [];
-  let lastLabelled: Marker | null = null;
+  let lastLabelled = -1;
   for (const t of [...entries].sort((a, b) => a.timestamp - b.timestamp)) {
     const insulin = bolusUnitsOf(t);
     const noteOnly = !(t.carbs > 0) && !(insulin > 0);
     if (noteOnly && !(t.notes && t.notes.trim())) continue;
-    const m: Marker = { entry: t, y: noteOnly ? Math.min(high, Math.max(low, 6)) : markerY(t, low, high), label: noteOnly ? '' : markerLabel(t), noteOnly };
-    if (!noteOnly && lastLabelled && t.timestamp - lastLabelled.entry.timestamp < 10 * MINUTE_MS && lastLabelled.label) {
-      lastLabelled.label = `${lastLabelled.label}+${m.label}`;
+    const m: Marker = { entry: t, y: noteOnly ? Math.min(high, Math.max(low, 6)) : markerY(t, low, high), label: noteOnly ? '' : markerLabel(t), owner: out.length, noteOnly };
+    const head = out[lastLabelled];
+    if (!noteOnly && head && t.timestamp - head.entry.timestamp < 10 * MINUTE_MS && head.label) {
+      head.label = `${head.label}+${m.label}`;
       m.label = '';
+      m.owner = lastLabelled;
     }
     out.push(m);
-    if (!noteOnly && m.label) lastLabelled = m;
+    if (!noteOnly && m.label) lastLabelled = out.length - 1;
   }
   return out;
+}
+
+/** Where the graph draws a marker's label: a 20 px high box centred over the dot, 10–30 px above it. */
+export function labelBox(label: string, mx: number, my: number): { x: number; y: number; w: number; h: number } {
+  const w = label.length * 7.4 + 10;
+  return { x: mx - w / 2, y: my - 30, w, h: 20 };
+}
+
+/** How far from a dot a finger still hits it, and the slack around a label (screen px). */
+const DOT_REACH = 30;
+const LABEL_SLACK = 8;
+
+/**
+ * The entry a tap at (px, py) means: the nearest dot within a finger's reach, or any point of a green
+ * label (plus a little slack). A merged label ("12u80g+2u") stands for all its entries and the meal
+ * among them wins, so tapping the label opens the meal. Null when no marker is that close.
+ * {@code at} gives a marker's dot in screen pixels.
+ */
+export function pickMarker(markers: readonly Marker[], px: number, py: number, at: (m: Marker) => [number, number]): Treatment | null {
+  let best: { d: number; meal: boolean; dot: number; t: Treatment } | null = null;
+  for (const m of markers) {
+    const [mx, my] = at(m);
+    const dot = Math.hypot(mx - px, (my - py) * 0.8);
+    let d = dot <= DOT_REACH ? dot : Infinity;
+    const owner = markers[m.owner];
+    if (owner?.label) {
+      const [ox, oy] = at(owner);
+      const b = labelBox(owner.label, ox, oy);
+      const outside = Math.hypot(Math.max(b.x - px, 0, px - b.x - b.w), Math.max(b.y - py, 0, py - b.y - b.h));
+      if (outside <= LABEL_SLACK) d = Math.min(d, outside);
+    }
+    if (d === Infinity) continue;
+    const c = { d, meal: m.entry.carbs > 0, dot, t: m.entry };
+    if (!best || c.d < best.d - 0.5 || (Math.abs(c.d - best.d) <= 0.5 && (c.meal !== best.meal ? c.meal : c.dot < best.dot))) best = c;
+  }
+  return best ? best.t : null;
 }
 
 /** Time grid: every 30 min / 1 h / 2 h / 4 h depending on how wide the view is. */
