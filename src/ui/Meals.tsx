@@ -154,7 +154,8 @@ function MealRow({ row, settings, revealed, onReveal, onOpen, onEdit, onDelete }
   const offset = drag ?? (revealed ? -ACTIONS_W : 0);
   return (
     <div class="swipe-row">
-      <div class="swipe-actions" aria-hidden={!revealed}>
+      {/* as in the app: the actions slide in over the card's right edge, the card stays */}
+      <div class={`swipe-actions ${drag !== null ? 'dragging' : ''}`} aria-hidden={!revealed} style={{ transform: `translateX(${ACTIONS_W + offset}px)` }}>
         <button class="swipe-edit" onClick={onEdit}>
           Изменить
         </button>
@@ -163,8 +164,7 @@ function MealRow({ row, settings, revealed, onReveal, onOpen, onEdit, onDelete }
         </button>
       </div>
       <div
-        class={`card tap swipe-front ${drag !== null ? 'dragging' : ''}`}
-        style={{ transform: `translateX(${offset}px)` }}
+        class="card tap swipe-front"
         onPointerDown={(e) => {
           swipe.current = { x: e.clientX, y: e.clientY, base: revealed ? -ACTIONS_W : 0, sideways: false, moved: false };
         }}

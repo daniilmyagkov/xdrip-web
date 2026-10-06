@@ -275,9 +275,9 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
 
 /* «Приёмы»: slide a meal to the left for «Изменить» / «Удалить», as in the app */
 .swipe-row { position: relative; border-radius: var(--radius); overflow: hidden; }
-.swipe-actions { position: absolute; top: 0; right: 0; bottom: 0; width: 176px; display: flex; }
+.swipe-actions { position: absolute; top: 0; right: 0; bottom: 0; width: 176px; display: flex; z-index: 2; transition: transform 0.18s ease; }
+.swipe-actions.dragging { transition: none; }
 .swipe-actions button { flex: 1; border: 0; font: inherit; font-weight: 800; font-size: 14px; color: #fff; cursor: pointer; }
 .swipe-edit { background: #3a4150; }
 .swipe-delete { background: var(--danger); }
-.swipe-front { position: relative; z-index: 1; touch-action: pan-y; transition: transform 0.18s ease; }
-.swipe-front.dragging { transition: none; }
+.swipe-front { position: relative; z-index: 1; touch-action: pan-y; }
