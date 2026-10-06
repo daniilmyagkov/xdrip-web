@@ -51,7 +51,6 @@ export function More({ conn, settings, onSettings, onSignOut }: Props) {
         <div class="grid2">
           <NumberField label="Граммов в 1 ХЕ" value={settings.gramsPerBreadUnit} onChange={(v) => set('gramsPerBreadUnit', v)} />
           <NumberField label="СК_отработки, ч" value={settings.workoutHours} onChange={(v) => set('workoutHours', v)} />
-          <NumberField label="Окно болюса, ± мин" value={settings.bolusWindowMin} onChange={(v) => set('bolusWindowMin', Math.round(v))} />
           <label class="field">
             <span>ФЧИ по правилу 100</span>
             <select class="input" value={settings.isfMethod} onChange={(e) => set('isfMethod', e.currentTarget.value === 'last_day' ? 'last_day' : 'average')}>

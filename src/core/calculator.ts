@@ -13,11 +13,13 @@ export type IsfSource = 'AUTO_RULE_OF_100' | 'MANUAL';
 export type Warning = 'NO_BOLUS' | 'NON_POSITIVE_DENOMINATOR' | 'ATYPICAL_RESULT';
 export type Missing = 'BG_START' | 'BG_END' | 'ISF' | 'CARBS' | 'GRAMS_PER_BREAD_UNIT';
 
-/** A подколка: its dose, hours from injection to the СК_отработка mark, and the units counted for this meal. */
+/** A dose other than the meal's own bolus: its units, hours to the mark (or since injection for a prior dose), and the units counted for this meal. */
 export interface Supplement {
   doseUnits: number;
   hoursToSplit: number;
   effectiveUnits: number;
+  /** When it was injected (0 = unknown). */
+  timestamp?: number;
 }
 
 export interface CarbRatioInput {
@@ -31,6 +33,8 @@ export interface CarbRatioInput {
   supplements: Supplement[];
   additionalCarbGrams: number;
   residualPriorInsulinUnits: number;
+  /** Part of the typed bolus acting inside the meal's window (activity table); 1 unless the next meal cut it. */
+  bolusShare: number;
 }
 
 export interface AppliedSupplement {
@@ -56,6 +60,8 @@ export interface CarbRatioResult {
   effectiveBolusUnits: number;
   supplementalEffectiveUnits: number;
   residualPriorInsulinUnits: number;
+  /** Share of the typed bolus that was counted. */
+  bolusShare: number;
   appliedSupplements: AppliedSupplement[];
   additionalCarbGrams: number;
   doseDenominatorUnits: number;
@@ -74,6 +80,7 @@ export function emptyInput(): CarbRatioInput {
     supplements: [],
     additionalCarbGrams: 0,
     residualPriorInsulinUnits: 0,
+    bolusShare: 1,
   };
 }
 
@@ -119,6 +126,7 @@ function emptyResult(isfSource: IsfSource, isf: number): CarbRatioResult {
     effectiveBolusUnits: NaN,
     supplementalEffectiveUnits: 0,
     residualPriorInsulinUnits: 0,
+    bolusShare: 1,
     appliedSupplements: [],
     additionalCarbGrams: 0,
     doseDenominatorUnits: NaN,
@@ -137,7 +145,9 @@ export function calculate(input: CarbRatioInput): CarbRatioResult {
   if (!(input.gramsPerBreadUnit > 0) || !Number.isFinite(input.gramsPerBreadUnit)) r.missing.add('GRAMS_PER_BREAD_UNIT');
   if (r.missing.size > 0) return r;
 
-  const typedBolus = Number.isFinite(input.bolusDoseUnits) ? input.bolusDoseUnits : 0;
+  const share = Number.isFinite(input.bolusShare) && input.bolusShare >= 0 && input.bolusShare <= 1 ? input.bolusShare : 1;
+  r.bolusShare = share;
+  const typedBolus = (Number.isFinite(input.bolusDoseUnits) ? input.bolusDoseUnits : 0) * share;
 
   let supplementalEffective = 0;
   for (const s of input.supplements) {

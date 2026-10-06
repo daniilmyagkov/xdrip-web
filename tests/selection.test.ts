@@ -3,7 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { actedFraction, remainingFraction } from '../src/core/insulin';
 import {
   averageDailyBolusBeforeDay,
+  bolusShare,
+  collectPriorDoses,
   collectSupplements,
+  SAME_MOMENT_MS,
+  shareInWindow,
   firstCarbAtOrAfter,
   isReadyToCompute,
   pickNearest,
@@ -72,11 +76,26 @@ describe('targetEndTime / readiness', () => {
 });
 
 describe('bolus sums', () => {
-  it('counts before and after equally inside the window', () => {
-    expect(sumBolus([ins(MEAL - 25 * MIN, 2), ins(MEAL + 25 * MIN, 3), ins(MEAL + 90 * MIN, 4)], MEAL, 30 * MIN)).toBeCloseTo(5, D9);
+  it("is only the dose at the meal itself", () => {
+    expect(sumBolus([ins(MEAL - 20 * MIN, 2), ins(MEAL, 19.5), ins(MEAL + MIN, 1), ins(MEAL + 25 * MIN, 3)], MEAL)).toBeCloseTo(20.5, D9);
   });
-  it('excludes doses outside the window on either side', () => {
-    expect(sumBolus([ins(MEAL - 2 * HOUR, 2), ins(MEAL, 19.5), ins(MEAL + 2 * HOUR, 1)], MEAL, 30 * MIN)).toBeCloseTo(19.5, D9);
+});
+
+describe('every dose by the 5 h activity table', () => {
+  const end = MEAL + 5 * HOUR;
+  it('follows the table', () => {
+    expect(shareInWindow(MEAL, MEAL, end, 5)).toBeCloseTo(1, D9);
+    expect(shareInWindow(MEAL - 15 * MIN, MEAL, end, 5)).toBeCloseTo(0.9375, D9);
+    expect(shareInWindow(MEAL - 40 * MIN, MEAL, end, 5)).toBeCloseTo(1 - 0.25 * (40 / 60), D9);
+    expect(shareInWindow(MEAL + 2 * HOUR, MEAL, end, 5)).toBeCloseTo(0.85, D9);
+    expect(shareInWindow(end, MEAL, end, 5)).toBe(0);
+    expect(shareInWindow(MEAL - 5 * HOUR, MEAL, end, 5)).toBe(0);
+    expect(shareInWindow(MEAL, MEAL, end, 0)).toBe(0);
+  });
+  it('cuts the bolus share when the next meal ends the window early', () => {
+    expect(bolusShare([ins(MEAL, 10)], MEAL, MEAL + 5 * HOUR, 5)).toBeCloseTo(1, D9);
+    expect(bolusShare([ins(MEAL, 10)], MEAL, MEAL + 3 * HOUR, 5)).toBeCloseTo(0.85, D9);
+    expect(bolusShare([], MEAL, MEAL + HOUR, 5)).toBe(1);
   });
 });
 
@@ -95,16 +114,23 @@ describe('ФЧИ: whole days before the meal day', () => {
   });
 });
 
-describe('residual insulin of the previous meal', () => {
+describe('insulin injected before the meal', () => {
+  it('a pre-meal подколка counts by the table', () => {
+    const prior = collectPriorDoses([ins(MEAL - 40 * MIN, 2)], MEAL, MEAL + 5 * HOUR, 5);
+    expect(prior).toHaveLength(1);
+    expect(prior[0]?.timestamp).toBe(MEAL - 40 * MIN);
+    expect(prior[0]?.effectiveUnits).toBeCloseTo(2 * (1 - 0.25 * (40 / 60)), D9);
+  });
   it('decays along the activity curve', () => {
-    expect(residualPriorInsulin([ins(MEAL - 105 * MIN, 6)], MEAL, 3.5, MEAL - 30 * MIN)).toBeCloseTo(6 * remainingFraction(1.75, 3.5), D9);
+    expect(residualPriorInsulin([ins(MEAL - 105 * MIN, 6)], MEAL, MEAL + 210 * MIN, 3.5)).toBeCloseTo(6 * remainingFraction(1.75, 3.5), D9);
   });
-  it('zero once fully worked off', () => expect(residualPriorInsulin([ins(MEAL - 6 * HOUR, 8)], MEAL, 3.5, MEAL - 30 * MIN)).toBeCloseTo(0, D9));
-  it('zero for a dose older than the action time', () => expect(residualPriorInsulin([ins(MEAL - 4 * HOUR, 8)], MEAL, 3.5, MEAL - 30 * MIN)).toBeCloseTo(0, D9));
+  it('zero for a dose older than the action time', () => {
+    expect(residualPriorInsulin([ins(MEAL - 4 * HOUR, 8), ins(MEAL - 6 * HOUR, 8)], MEAL, MEAL + 210 * MIN, 3.5)).toBeCloseTo(0, D9);
+  });
   it("skips the meal's own bolus", () => {
-    expect(residualPriorInsulin([ins(MEAL - 10 * MIN, 5), ins(MEAL - 2 * HOUR, 4)], MEAL, 3.5, MEAL - 30 * MIN)).toBeCloseTo(4 * remainingFraction(2, 3.5), 6);
+    expect(residualPriorInsulin([ins(MEAL, 5), ins(MEAL - 2 * HOUR, 4)], MEAL, MEAL + 210 * MIN, 3.5)).toBeCloseTo(4 * remainingFraction(2, 3.5), 6);
   });
-  it('zero when action time is not positive', () => expect(residualPriorInsulin([ins(MEAL - HOUR, 5)], MEAL, 0, MEAL - 30 * MIN)).toBe(0));
+  it('zero when action time is not positive', () => expect(residualPriorInsulin([ins(MEAL - HOUR, 5)], MEAL, MEAL + HOUR, 0)).toBe(0));
 });
 
 describe('доедания', () => {
@@ -119,27 +145,31 @@ describe('доедания', () => {
 });
 
 describe('подколки', () => {
-  it('no next meal: weights by time to the observation end', () => {
-    const s = collectSupplements([ins(MEAL - 5 * MIN, 6), ins(MEAL + 2 * HOUR, 2), ins(MEAL + 5 * HOUR, 1)], MEAL, 30 * MIN, MEAL + 5 * HOUR, null, 5);
-    expect(s).toHaveLength(1);
-    expect(s[0]?.doseUnits).toBeCloseTo(2, D9);
-    expect(s[0]?.hoursToSplit).toBeCloseTo(3, D9);
-    expect(s[0]?.effectiveUnits).toBeCloseTo(1.7, D9);
+  it('weights by time to the observation end', () => {
+    const s = collectSupplements([ins(MEAL, 6), ins(MEAL + 20 * MIN, 1.5), ins(MEAL + 2 * HOUR, 2), ins(MEAL + 5 * HOUR, 1)], MEAL, MEAL + 5 * HOUR, 5);
+    expect(s).toHaveLength(2);
+    expect(s[0]?.effectiveUnits).toBeCloseTo(1.5 * actedFraction(4 + 40 / 60, 5), D9);
+    expect(s[1]?.doseUnits).toBeCloseTo(2, D9);
+    expect(s[1]?.hoursToSplit).toBeCloseTo(3, D9);
+    expect(s[1]?.effectiveUnits).toBeCloseTo(1.7, D9);
   });
-  it('splits between two meals without double counting', () => {
-    const mealA = MEAL;
-    const jab = MEAL + 3 * HOUR;
+  it('a dose between two meals is split without loss or double counting', () => {
     const mealB = MEAL + 4 * HOUR;
-    const ev = [ins(mealA, 6), ins(jab, 2), ins(mealB, 7)];
-    const forA = collectSupplements(ev, mealA, 30 * MIN, mealB, mealB, 4);
+    const ev = [ins(MEAL, 6), ins(MEAL + 3 * HOUR, 2), ins(mealB, 7)];
+    const forA = collectSupplements(ev, MEAL, mealB, 4);
     expect(forA).toHaveLength(1);
     expect(forA[0]?.effectiveUnits).toBeCloseTo(2 * actedFraction(1, 4), D9);
-    const forB = residualPriorInsulin(ev, mealB, 4, mealB - 30 * MIN);
+    const forB = residualPriorInsulin(ev, mealB, mealB + 4 * HOUR, 4);
     expect(forB).toBeCloseTo(2 * remainingFraction(1, 4), D9);
     expect((forA[0]?.effectiveUnits ?? 0) + forB).toBeCloseTo(2, D9);
   });
-  it("ignores a jab inside the next meal's pre-bolus zone", () => {
+  it("a pre-bolus for the next meal is split the same way", () => {
     const mealB = MEAL + 4 * HOUR;
-    expect(collectSupplements([ins(mealB - 15 * MIN, 2)], MEAL, 30 * MIN, mealB, mealB, 4)).toHaveLength(0);
+    const ev = [ins(mealB - 15 * MIN, 2)];
+    const forA = collectSupplements(ev, MEAL, mealB, 4);
+    const forB = residualPriorInsulin(ev, mealB, mealB + 4 * HOUR, 4);
+    expect(forA[0]?.effectiveUnits).toBeCloseTo(2 * actedFraction(0.25, 4), D9);
+    expect((forA[0]?.effectiveUnits ?? 0) + forB).toBeCloseTo(2, D9);
   });
+  it('the same-moment margin matches Android', () => expect(SAME_MOMENT_MS).toBe(2 * MIN));
 });

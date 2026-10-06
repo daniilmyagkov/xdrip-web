@@ -78,7 +78,7 @@ describe('insulin activity curve', () => {
   it("user's worked example: 2 U one hour after the meal, 4 h window → 1.805 U", () => {
     const meal = 1_700_000_000_000;
     const hour = 3_600_000;
-    const s = collectSupplements([{ timestamp: meal + hour, bolusUnits: 2, attached: false }], meal, 30 * 60_000, meal + 4 * hour, null, 4);
+    const s = collectSupplements([{ timestamp: meal + hour, bolusUnits: 2, attached: false }], meal, meal + 4 * hour, 4);
     expect(s).toHaveLength(1);
     expect(s[0]?.effectiveUnits).toBeCloseTo(1.805, D9);
     expect(s[0]?.doseUnits).toBeCloseTo(2, D9);

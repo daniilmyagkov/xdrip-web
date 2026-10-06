@@ -72,13 +72,43 @@ export function pickEnd(
   return pickNearest(readings, target, radiusMs, Number.NEGATIVE_INFINITY, target + toleranceMs);
 }
 
-/** Main bolus: every dose within ±windowMs of the meal (before counts the same as after). */
-export function sumBolus(events: readonly InsulinEvent[] | null | undefined, mealTime: number, windowMs: number): number {
+/**
+ * Doses "at the same moment" as the meal (its own insulin, or a separate entry typed right next to
+ * it) are shown as the meal's bolus. Every dose is weighed by time the same way — this only groups.
+ */
+export const SAME_MOMENT_MS = 2 * 60_000;
+
+/**
+ * Share of a dose injected at {@code doseTime} that acts inside the meal's window [mealTime, endTime],
+ * off the 5-part activity curve over {@code actionHours} ("СК_отработки"). Consecutive meals' windows
+ * never overlap, so one dose is split between meals by time and never counted twice.
+ */
+export function shareInWindow(doseTime: number, mealTime: number, endTime: number, actionHours: number): number {
+  if (!(actionHours > 0) || endTime <= mealTime || doseTime >= endTime) return 0;
+  const share = actedFraction((endTime - doseTime) / HOUR_MS, actionHours) - actedFraction((mealTime - doseTime) / HOUR_MS, actionHours);
+  return share > 0 ? share : 0;
+}
+
+/** Units of the meal's own bolus — doses within SAME_MOMENT_MS of the meal. */
+export function sumBolus(events: readonly InsulinEvent[] | null | undefined, mealTime: number): number {
   let sum = 0;
   for (const e of events ?? []) {
-    if (e && Math.abs(e.timestamp - mealTime) <= windowMs) sum += e.bolusUnits;
+    if (e && Math.abs(e.timestamp - mealTime) <= SAME_MOMENT_MS) sum += e.bolusUnits;
   }
   return sum;
+}
+
+/** Part of the meal's own bolus acting inside [mealTime, endTime]: 1 unless the next meal cut the window. */
+export function bolusShare(events: readonly InsulinEvent[] | null | undefined, mealTime: number, endTime: number, actionHours: number): number {
+  let raw = 0;
+  let effective = 0;
+  for (const e of events ?? []) {
+    if (e && Math.abs(e.timestamp - mealTime) <= SAME_MOMENT_MS && e.bolusUnits > 0) {
+      raw += e.bolusUnits;
+      effective += e.bolusUnits * shareInWindow(e.timestamp, mealTime, endTime, actionHours);
+    }
+  }
+  return raw > 0 ? effective / raw : 1;
 }
 
 export function sumAdditionalCarbs(carbs: readonly CarbEvent[] | null | undefined, mealTime: number, cutoff: number): number {
@@ -113,53 +143,50 @@ export function firstUnattachedCarbAfter(carbs: readonly CarbEvent[] | null | un
   return earliest;
 }
 
-/** Подколки after the main window, each weighted by the activity curve up to the СК_отработка mark. */
+/** Doses after the meal up to СК_отработка (endTime), each with its share from the activity table. */
 export function collectSupplements(
   events: readonly InsulinEvent[] | null | undefined,
   mealTime: number,
-  mainWindowMs: number,
   endTime: number,
-  nextMealTime: number | null,
   actionHours: number,
 ): Supplement[] {
   const out: Supplement[] = [];
-  if (!events) return out;
-  const actionMs = Math.round(Math.max(actionHours, 0) * HOUR_MS);
-  const haveNext = nextMealTime !== null && nextMealTime > mealTime;
-  const after = mealTime + mainWindowMs;
-  const splitPoint = endTime;
-  const suppEnd = haveNext ? Math.max(after, (nextMealTime as number) - mainWindowMs) : endTime;
-  for (const e of events) {
-    if (!e || e.bolusUnits === 0) continue;
-    const withinBolus = Math.abs(e.timestamp - mealTime) <= mainWindowMs;
-    const inSuppWindow = e.timestamp > after && e.timestamp < suppEnd;
-    const taggedLate = e.attached && !withinBolus && e.timestamp > mealTime && e.timestamp < suppEnd;
-    if (!inSuppWindow && !taggedLate) continue;
-    const toSplit = Math.max(0, splitPoint - e.timestamp);
-    const weight = actionMs > 0 ? actedFraction(toSplit / HOUR_MS, actionHours) : 0;
-    out.push({ doseUnits: e.bolusUnits, hoursToSplit: toSplit / HOUR_MS, effectiveUnits: e.bolusUnits * weight });
+  for (const e of events ?? []) {
+    if (!e || e.bolusUnits === 0 || e.timestamp <= mealTime + SAME_MOMENT_MS || e.timestamp >= endTime) continue;
+    const share = shareInWindow(e.timestamp, mealTime, endTime, actionHours);
+    out.push({ doseUnits: e.bolusUnits, hoursToSplit: (endTime - e.timestamp) / HOUR_MS, effectiveUnits: e.bolusUnits * share, timestamp: e.timestamp });
   }
   return out;
 }
 
-/** Still-active part of doses given before the meal's own bolus window (previous meal / its подколки). */
+/** Doses before the meal (a pre-meal подколка, the previous meal's) still acting in its window, each with its share. */
+export function collectPriorDoses(
+  events: readonly InsulinEvent[] | null | undefined,
+  mealTime: number,
+  endTime: number,
+  actionHours: number,
+): Supplement[] {
+  const out: Supplement[] = [];
+  if (!(actionHours > 0)) return out;
+  const actionStart = mealTime - Math.round(actionHours * HOUR_MS);
+  for (const e of events ?? []) {
+    if (!e || e.bolusUnits <= 0 || e.timestamp >= mealTime - SAME_MOMENT_MS || e.timestamp <= actionStart) continue;
+    const share = shareInWindow(e.timestamp, mealTime, endTime, actionHours);
+    if (share > 0) {
+      out.push({ doseUnits: e.bolusUnits, hoursToSplit: (mealTime - e.timestamp) / HOUR_MS, effectiveUnits: e.bolusUnits * share, timestamp: e.timestamp });
+    }
+  }
+  return out;
+}
+
+/** Units from doses before the meal that acted inside its window — the sum of collectPriorDoses. */
 export function residualPriorInsulin(
   events: readonly InsulinEvent[] | null | undefined,
   mealTime: number,
+  endTime: number,
   actionHours: number,
-  ownBolusFromMs: number,
 ): number {
-  if (!events || !(actionHours > 0)) return 0;
-  const windowStartMs = mealTime - Math.round(actionHours * HOUR_MS);
-  let sum = 0;
-  for (const e of events) {
-    if (!e || e.bolusUnits <= 0) continue;
-    if (e.timestamp >= ownBolusFromMs || e.timestamp <= windowStartMs) continue;
-    const hoursAgo = (mealTime - e.timestamp) / HOUR_MS;
-    const stillActive = remainingFraction(hoursAgo, actionHours);
-    if (stillActive > 0) sum += e.bolusUnits * stillActive;
-  }
-  return sum;
+  return collectPriorDoses(events, mealTime, endTime, actionHours).reduce((sum, d) => sum + d.effectiveUnits, 0);
 }
 
 /**

@@ -9,11 +9,12 @@ import { parseBgStart, parseIsf, pinnedIsf } from './notes';
 import { Attachments, previousMealIsf } from './roles';
 import {
   averageDailyBolusBeforeDay,
+  bolusShare,
+  collectPriorDoses,
   collectSupplements,
   firstUnattachedCarbAfter,
   pickNearest,
   pickStart,
-  residualPriorInsulin,
   sumAttachedCarbs,
   sumBolus,
   targetEndTime,
@@ -32,10 +33,15 @@ export const END_RADIUS_MS = 12 * 60 * MINUTE_MS;
 export interface Pulled {
   bgStartMmol: number;
   bgEndMmol: number;
+  /** The meal's own bolus (same moment), raw units. */
   bolusUnits: number;
+  /** Part of it acting inside the meal's window (1 unless the next meal cut the window short). */
+  bolusShare: number;
   carbGrams: number;
   additionalCarbGrams: number;
   supplements: Supplement[];
+  /** Doses before the meal still acting in its window, each with its share. */
+  priorDoses: Supplement[];
   residualPriorInsulinUnits: number;
   isfMmolPerUnit: number;
   windowComplete: boolean;
@@ -88,7 +94,8 @@ export function byTimestamp(entries: readonly Treatment[], ts: number, accuracyM
 }
 
 export function pull(data: Data, mealTime: number, mealCarbGrams: number, now: number, s: Effective): Pulled {
-  const { bolusWindowMs, workoutMs } = s;
+  const { workoutMs } = s;
+  const actionHours = workoutMs / HOUR_MS;
   const attachments = Attachments.resolve(data.entries, workoutMs);
 
   // доедания are what the roles say, inside the отработка window (no separate доедание window)
@@ -109,8 +116,9 @@ export function pull(data: Data, mealTime: number, mealCarbGrams: number, now: n
   const isfEvents = bolusEvents(data, mealDayStart - days * DAY_MS - MINUTE_MS, mealDayStart + MINUTE_MS, null);
   const isf = isfByRuleOf100(averageDailyBolusBeforeDay(isfEvents, mealDayStart, days));
 
-  const insulinLookback = Math.max(bolusWindowMs, workoutMs);
-  const windowEvents = bolusEvents(data, mealTime - insulinLookback - MINUTE_MS, endTarget + MINUTE_MS, attachments);
+  // every dose from one action time before the meal up to СК_отработка, by the activity table
+  const windowEvents = bolusEvents(data, mealTime - workoutMs - MINUTE_MS, endTarget + MINUTE_MS, attachments);
+  const priorDoses = collectPriorDoses(windowEvents, mealTime, endTime, actionHours);
 
   let bgStartMmol = start ? start.mmol : NaN;
   const mealEntry = byTimestamp(data.entries, mealTime, 6 * MINUTE_MS);
@@ -122,11 +130,13 @@ export function pull(data: Data, mealTime: number, mealCarbGrams: number, now: n
   return {
     bgStartMmol,
     bgEndMmol: end ? end.mmol : NaN,
-    bolusUnits: sumBolus(windowEvents, mealTime, bolusWindowMs),
+    bolusUnits: sumBolus(windowEvents, mealTime),
+    bolusShare: bolusShare(windowEvents, mealTime, endTime, actionHours),
     carbGrams: mealCarbGrams + additionalCarbGrams,
     additionalCarbGrams,
-    supplements: collectSupplements(windowEvents, mealTime, bolusWindowMs, endTime, nextMealTime, workoutMs / HOUR_MS),
-    residualPriorInsulinUnits: residualPriorInsulin(windowEvents, mealTime, workoutMs / HOUR_MS, mealTime - bolusWindowMs),
+    supplements: collectSupplements(windowEvents, mealTime, endTime, actionHours),
+    priorDoses,
+    residualPriorInsulinUnits: priorDoses.reduce((sum, d) => sum + d.effectiveUnits, 0),
     isfMmolPerUnit: isf,
     windowComplete: now >= endTime,
     expectedEndTime: endTime,
@@ -172,5 +182,6 @@ export function estimateMeal(data: Data, meal: Treatment, now: number, s: Effect
   input.additionalCarbGrams = pulled.additionalCarbGrams;
   input.supplements.push(...pulled.supplements);
   input.residualPriorInsulinUnits = pulled.residualPriorInsulinUnits;
+  input.bolusShare = pulled.bolusShare;
   return { pulled, result: calculate(input), isfOrigin: origin };
 }

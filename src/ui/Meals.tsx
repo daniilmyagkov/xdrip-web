@@ -159,20 +159,34 @@ function MealCard({ row, settings, now, onClose }: { row: Row; settings: Effecti
               <span>Болюс</span>
               <span>{trim(p.bolusUnits, 2)} ед</span>
             </div>
-            {p.supplements.map((s, i) => (
-              <div class="kv" key={i}>
-                <span>Подколка {trim(s.doseUnits, 2)} ед</span>
+            {p.bolusShare < 0.995 && p.bolusUnits > 0 && (
+              <div class="kv">
+                <span>действовал до след. приёма</span>
                 <span>
-                  вес {Math.round((s.effectiveUnits / s.doseUnits) * 100)}% → {trim(s.effectiveUnits, 2)} ед
+                  {Math.round(p.bolusShare * 100)}% → {trim(p.bolusUnits * p.bolusShare, 2)} ед
+                </span>
+              </div>
+            )}
+            {p.priorDoses.map((d, i) => (
+              <div class="kv" key={`p${i}`}>
+                <span>
+                  До еды {trim(d.doseUnits, 2)} ед · {d.timestamp ? hhmm(d.timestamp) : ''}
+                </span>
+                <span>
+                  {Math.round((d.effectiveUnits / d.doseUnits) * 100)}% → {trim(d.effectiveUnits, 2)} ед
                 </span>
               </div>
             ))}
-            {p.residualPriorInsulinUnits > 0.005 && (
-              <div class="kv">
-                <span>Остаток инсулина прошлого приёма</span>
-                <span>{trim(p.residualPriorInsulinUnits, 2)} ед</span>
+            {p.supplements.map((s, i) => (
+              <div class="kv" key={`s${i}`}>
+                <span>
+                  Подколка {trim(s.doseUnits, 2)} ед · {s.timestamp ? hhmm(s.timestamp) : ''}
+                </span>
+                <span>
+                  {Math.round((s.effectiveUnits / s.doseUnits) * 100)}% → {trim(s.effectiveUnits, 2)} ед
+                </span>
               </div>
-            )}
+            ))}
             <div class="kv">
               <span>Углеводы</span>
               <span>
