@@ -88,10 +88,11 @@ export function byTimestamp(entries: readonly Treatment[], ts: number, accuracyM
 }
 
 export function pull(data: Data, mealTime: number, mealCarbGrams: number, now: number, s: Effective): Pulled {
-  const { bolusWindowMs, workoutMs, additionalWindowMs } = s;
+  const { bolusWindowMs, workoutMs } = s;
   const attachments = Attachments.resolve(data.entries, workoutMs);
 
-  const carbScanMs = Math.max(workoutMs, additionalWindowMs) + MINUTE_MS;
+  // доедания are what the roles say, inside the отработка window (no separate доедание window)
+  const carbScanMs = workoutMs + MINUTE_MS;
   const carbsAfter = carbEventsBetween(data, mealTime + 1, mealTime + carbScanMs, attachments);
   const additionalCarbGrams = sumAttachedCarbs(carbsAfter, mealTime, mealTime + carbScanMs);
 

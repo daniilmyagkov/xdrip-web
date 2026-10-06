@@ -8,7 +8,6 @@ import { DEFAULT_MEAL_HOURS, type MealHours } from './classifier';
 export interface UkSettings {
   gramsPerBreadUnit: number;
   bolusWindowMin: number;
-  additionalWindowMin: number;
   workoutHours: number;
   isfMethod: 'average' | 'last_day';
   isfAvgDays: number;
@@ -21,7 +20,6 @@ export interface UkSettings {
 export const DEFAULT_SETTINGS: UkSettings = {
   gramsPerBreadUnit: 10,
   bolusWindowMin: 30,
-  additionalWindowMin: 120,
   workoutHours: 5,
   isfMethod: 'average',
   isfAvgDays: 3,
@@ -38,7 +36,6 @@ const positiveOr = (v: number, fallback: number): number => (Number.isFinite(v) 
 export interface Effective {
   gramsPerBreadUnit: number;
   bolusWindowMs: number;
-  additionalWindowMs: number;
   workoutMs: number;
   isfDays: number;
   mealHours: MealHours;
@@ -52,7 +49,6 @@ export function effective(s: UkSettings = DEFAULT_SETTINGS): Effective {
   return {
     gramsPerBreadUnit: clamp(positiveOr(s.gramsPerBreadUnit, 10), 1, 100),
     bolusWindowMs: Math.round(clamp(positiveOr(s.bolusWindowMin, 30), 1, 12 * 60) * MINUTE_MS),
-    additionalWindowMs: Math.round(clamp(positiveOr(s.additionalWindowMin, 120), 1, 24 * 60) * MINUTE_MS),
     workoutMs: Math.round(clamp(positiveOr(s.workoutHours, 5), 0.5, 24) * HOUR_MS),
     isfDays,
     mealHours: s.mealHours,
