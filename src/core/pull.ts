@@ -29,9 +29,13 @@ import { DAY_MS, HOUR_MS, localMidnight, MINUTE_MS } from './units';
 export const START_LOOKBACK_MS = 40 * MINUTE_MS;
 export const START_FORWARD_TOLERANCE_MS = 5 * MINUTE_MS;
 export const END_RADIUS_MS = 12 * 60 * MINUTE_MS;
+/** A glucometer measurement this close to the meal (either side) is its СК_старт instead of the sensor. */
+export const FINGER_STICK_RADIUS_MS = 5 * MINUTE_MS;
 
 export interface Pulled {
   bgStartMmol: number;
+  /** {@link bgStartMmol} is a glucometer (finger-stick) measurement, not the sensor. */
+  bgStartFromMeter: boolean;
   bgEndMmol: number;
   /** The meal's own bolus (same moment), raw units. */
   bolusUnits: number;
@@ -53,6 +57,8 @@ export interface Data {
   readings: readonly BgPoint[];
   /** Food / insulin / note entries (any order). */
   entries: readonly Treatment[];
+  /** Glucometer (finger-stick) measurements (any order), mmol/L. */
+  meter?: readonly BgPoint[];
 }
 
 const inRange = (ts: number, from: number, to: number): boolean => ts >= from && ts <= to;
@@ -121,14 +127,31 @@ export function pull(data: Data, mealTime: number, mealCarbGrams: number, now: n
   const priorDoses = collectPriorDoses(windowEvents, mealTime, endTime, actionHours);
 
   let bgStartMmol = start ? start.mmol : NaN;
+  // a glucometer measurement within ±5 min of the meal is more exact than the sensor — it wins
+  const stick = pickNearest(
+    (data.meter ?? []).filter((m) => m.mmol > 0),
+    mealTime,
+    FINGER_STICK_RADIUS_MS,
+    mealTime - FINGER_STICK_RADIUS_MS,
+    mealTime + FINGER_STICK_RADIUS_MS,
+  );
+  let bgStartFromMeter = false;
+  if (stick) {
+    bgStartMmol = stick.mmol;
+    bgStartFromMeter = true;
+  }
   const mealEntry = byTimestamp(data.entries, mealTime, 6 * MINUTE_MS);
   if (mealEntry) {
     const pinned = parseBgStart(mealEntry.notes);
-    if (Number.isFinite(pinned) && pinned > 0) bgStartMmol = pinned;
+    if (Number.isFinite(pinned) && pinned > 0) {
+      bgStartMmol = pinned;
+      bgStartFromMeter = false;
+    }
   }
 
   return {
     bgStartMmol,
+    bgStartFromMeter,
     bgEndMmol: end ? end.mmol : NaN,
     bolusUnits: sumBolus(windowEvents, mealTime),
     bolusShare: bolusShare(windowEvents, mealTime, endTime, actionHours),

@@ -270,7 +270,8 @@ export function MealCard({ row, settings, now, onClose, children }: { row: Row; 
             <div class="kv">
               <span>СК перед едой → после</span>
               <span>
-                {mmol(p.bgStartMmol)} → {mmol(p.bgEndMmol)}
+                {mmol(p.bgStartMmol)}
+                {p.bgStartFromMeter ? ' (из пальца)' : ''} → {mmol(p.bgEndMmol)}
               </span>
             </div>
             <div class="kv">

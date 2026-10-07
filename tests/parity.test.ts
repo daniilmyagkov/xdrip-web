@@ -69,6 +69,34 @@ describe('parity with the Android app (emulator data of 2026-10-03)', () => {
     expect(result.insulinPerBreadUnit).toBe(1.16);
   });
 
+  it('a glucometer measurement within ±5 min of the meal is its starting sugar', () => {
+    const data = seed();
+    const viewedAt = NOW_SEED + 6 * M;
+    const meal = data.entries.find((t) => t.id === 'breakfast') as Treatment;
+    const withStick = (meter: { timestamp: number; mmol: number }[]) => estimateMeal({ ...data, meter }, meal, viewedAt, effective()).pulled;
+    // 3 min before and 2 min after: the nearer one (after) wins
+    const p = withStick([
+      { timestamp: data.breakfast - 3 * M, mmol: 5.7 },
+      { timestamp: data.breakfast + 2 * M, mmol: 6.9 },
+    ]);
+    expect(p.bgStartMmol).toBe(6.9);
+    expect(p.bgStartFromMeter).toBe(true);
+    // 6 min away: the sensor as before
+    const far = withStick([{ timestamp: data.breakfast - 6 * M, mmol: 5.0 }]);
+    expect(far.bgStartMmol).toBeCloseTo(6.3535, 4);
+    expect(far.bgStartFromMeter).toBe(false);
+    // a sugar typed into the meal («СК перед едой») still wins
+    const pinnedMeal = { ...meal, notes: 'СКстарт 7.4' };
+    const pinned = estimateMeal(
+      { ...data, entries: data.entries.map((t) => (t.id === 'breakfast' ? pinnedMeal : t)), meter: [{ timestamp: data.breakfast, mmol: 5.7 }] },
+      pinnedMeal,
+      viewedAt,
+      effective(),
+    ).pulled;
+    expect(pinned.bgStartMmol).toBe(7.4);
+    expect(pinned.bgStartFromMeter).toBe(false);
+  });
+
   it('the meals list has the same ten meals as the Android «Приёмы» screen', () => {
     const data = seed();
     const meals = recentMeals(data.entries, NOW_SEED + 6 * M, 30 * 24 * H, effective().workoutMs);
